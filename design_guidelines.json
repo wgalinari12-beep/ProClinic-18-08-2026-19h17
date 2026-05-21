@@ -1,0 +1,99 @@
+{
+  "project_name": "ProClinic",
+  "domain": "Medical/Aesthetic Clinics SaaS Dashboard",
+  "theme": "Light & Dark Toggle (Both required)",
+  "archetype": "Archetype 5: Jewel & Luxury merged with Archetype 4: Swiss High-Contrast (Luxury Medical Minimalism)",
+  "emotional_tone": "Sophisticated, modern, organized, elegant, premium, international-grade.",
+  "typography": {
+    "headings": {
+      "font_family": "Outfit",
+      "import_instructions": "Import Outfit from Google Fonts",
+      "weights": [300, 400, 500, 600],
+      "usage": "Use tight tracking (tracking-tight) for large headings to maintain the Apple/Linear aesthetic. Do not use 'Inter' for headings."
+    },
+    "body": {
+      "font_family": "Manrope",
+      "import_instructions": "Import Manrope from Google Fonts",
+      "weights": [400, 500, 600],
+      "usage": "Use leading-relaxed for long texts and dense tracking for metadata/labels."
+    }
+  },
+  "colors": {
+    "light_mode": {
+      "background": "#FAFAFA",
+      "surface": "#FFFFFF",
+      "primary": "#B76E79",
+      "primary_hover": "#A6636D",
+      "secondary": "#C0A080",
+      "text_main": "#222222",
+      "text_muted": "#737373",
+      "border": "#E5E5E5",
+      "danger": "#EF4444",
+      "success": "#10B981"
+    },
+    "dark_mode": {
+      "background": "#0A0A0A",
+      "surface": "#141414",
+      "primary": "#D4AF37",
+      "primary_hover": "#E5C158",
+      "secondary": "#C0A080",
+      "text_main": "#EAEAEA",
+      "text_muted": "#A3A3A3",
+      "border": "#262626",
+      "danger": "#EF4444",
+      "success": "#10B981"
+    }
+  },
+  "layout_and_spacing": {
+    "strategy": "Bento Grid Protocol Mode B (Control Room) for dashboards. Very clean, high density but breathable.",
+    "gap_strategy": "gap-4 or gap-6 for dashboards, ensuring every pixel feels intentional.",
+    "card_style": "Flat, 1px solid border matching the theme's border color, slight rounded-2xl or rounded-xl corners. Avoid heavy drop shadows. Focus on optical clarity.",
+    "sidebar": "Linear-style sleek sidebar, thin borders, hover states using very subtle background shifts, muted icons."
+  },
+  "surfaces": {
+    "sticky_header": "Glassmorphism Crystal: backdrop-blur-xl bg-white/70 (light) or bg-black/60 (dark), with a 1px delicate inner stroke on the bottom.",
+    "dashboard_widgets": "Neumorphism/Flat: Matches parent background lightly, sharp inner contrast. Use 1px border-black/5 or border-white/10.",
+    "modals_dialogs": "Heavy blur backdrop, crisp solid background for the modal itself."
+  },
+  "components": {
+    "general": "Heavily customize Shadcn components. Strip the Vercel look by applying custom radii and replacing black/white solid buttons with the sophisticated rose gold/champagne palette.",
+    "agenda_calendar": "Must feel like a premium Google Calendar. Support drag-drop (if possible or visual indicators of it), color-coding by status, multiple practitioners. Use standard HTML/CSS grid for custom calendar layouts if Shadcn isn't flexible enough.",
+    "forms": "Minimalist borders, floating labels or very clean standard labels, highlight input rings with primary colors on focus.",
+    "icons": "lucide-react (1.5px stroke weight for premium thin aesthetic)."
+  },
+  "animations": {
+    "strategy": "Framer Motion. Subtle page load fades (opacity 0 to 1, y: 10 to 0 over 0.4s). Micro-interactions on buttons and card hovers."
+  },
+  "media_urls": {
+    "login_backgrounds": {
+      "light": "https://static.prod-images.emergentagent.com/jobs/105902f2-609a-42b3-bec6-f2df115da137/images/4331dbc8649fd3592a14843363c6e41a00045ee78ab342bb3d431be15cba5ac4.png",
+      "dark": "https://static.prod-images.emergentagent.com/jobs/105902f2-609a-42b3-bec6-f2df115da137/images/d91651128f35fbd4c6d93f13ed152a1a90005e541b97afb8dcad745edd5fcd7e.png",
+      "usage": "Use as full-screen cover on the login page for multi-profile selection. Must look incredibly high-end."
+    },
+    "clinic_interior": [
+      "https://images.pexels.com/photos/16571735/pexels-photo-16571735.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "https://images.unsplash.com/photo-1759262151080-e05ba1c6294f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjV8MHwxfHNlYXJjaHwyfHxsdXh1cnklMjBhZXN0aGV0aWMlMjBjbGluaWMlMjBpbnRlcmlvcnxlbnwwfHx8fDE3Nzk0MDI3NDJ8MA&ixlib=rb-4.1.0&q=85"
+    ],
+    "doctor_avatars": [
+      "https://images.unsplash.com/photo-1622253692010-333f2da6031d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODl8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBkb2N0b3IlMjBwb3J0cmFpdHxlbnwwfHx8fDE3Nzk0MDI3NDJ8MA&ixlib=rb-4.1.0&q=85",
+      "https://images.pexels.com/photos/19438566/pexels-photo-19438566.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "https://images.pexels.com/photos/32160037/pexels-photo-32160037.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+    ],
+    "patient_avatars": [
+      "https://images.unsplash.com/photo-1554151228-14d9def656e4?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwyfHxza2luY2FyZSUyMHBvcnRyYWl0fGVufDB8fHx8MTc3OTQwMjc0Mnww&ixlib=rb-4.1.0&q=85",
+      "https://images.pexels.com/photos/8298511/pexels-photo-8298511.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "https://images.pexels.com/photos/15327092/pexels-photo-15327092.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the color palette to ensure the 'Luxury Medical Minimalism' vibe. Avoid standard blue/green healthcare themes.",
+    "Implement the UI in Portuguese (pt-BR) as requested.",
+    "Build the dashboard using a cardless or ultra-flat rectangle style, avoiding heavy shadows or generic ERP appearances.",
+    "Implement a theme toggle (Light/Dark) that feels premium. The dark mode should lean on deep blacks and graphite, not blue-greys.",
+    "For the Prontuário Digital (Medical Record), use split views or side-by-side components to allow 'before and after' image comparison seamlessly.",
+    "Ensure all interactive elements and key text nodes contain 'data-testid' attributes for testing.",
+    "Do NOT use 'Inter' for headings. Stick to 'Outfit'.",
+    "Use standard HTML/Tailwind for the dashboard layout grid, mapping directly to Bento Grid Mode B.",
+    "Build a premium Sidebar Navigation inspired by Linear/Notion: collapsible, clean typographic hierarchy, muted active states."
+  ]
+}
