@@ -140,8 +140,8 @@ export default function Financeiro() {
         {/* Chart */}
         <section className="rounded-2xl border border-border bg-card p-6" data-testid="finance-chart">
           <h3 className="font-display text-xl font-semibold tracking-tight mb-5">Receitas x Despesas — 6 meses</h3>
-          <div style={{ width: "100%", height: 280 }}>
-            <ResponsiveContainer>
+          <div style={{ width: "100%", height: 280, minHeight: 280 }}>
+            <ResponsiveContainer minWidth={280}>
               <BarChart data={summary?.chart || []}>
                 <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="mes" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} axisLine={false} tickLine={false} />

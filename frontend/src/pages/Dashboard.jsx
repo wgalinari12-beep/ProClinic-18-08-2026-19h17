@@ -98,8 +98,8 @@ export default function Dashboard() {
                 Saldo {brl(finance?.saldo)}
               </Badge>
             </div>
-            <div style={{ width: "100%", height: 260 }}>
-              <ResponsiveContainer>
+            <div style={{ width: "100%", height: 260, minHeight: 260 }}>
+              <ResponsiveContainer minWidth={280}>
                 <AreaChart data={finance?.chart || []}>
                   <defs>
                     <linearGradient id="grad-rev" x1="0" y1="0" x2="0" y2="1">

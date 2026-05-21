@@ -637,12 +637,18 @@ async def finance_summary(user: dict = Depends(get_current_user)):
     despesas = sum(d["amount"] for d in docs if d["type"] == "despesa" and d.get("paid"))
     a_receber = sum(d["amount"] for d in docs if d["type"] == "receita" and not d.get("paid"))
     a_pagar = sum(d["amount"] for d in docs if d["type"] == "despesa" and not d.get("paid"))
-    # last 6 months chart
+    # last 6 months chart (calendar-month arithmetic, no duplicates near boundaries)
     today = datetime.now(timezone.utc)
     months = []
-    for i in range(5, -1, -1):
-        m = (today.replace(day=1) - timedelta(days=i*30)).strftime("%Y-%m")
-        months.append(m)
+    y, mo = today.year, today.month
+    buckets = []
+    for _ in range(6):
+        buckets.append(f"{y:04d}-{mo:02d}")
+        mo -= 1
+        if mo == 0:
+            mo = 12
+            y -= 1
+    months = list(reversed(buckets))
     chart = []
     for m in months:
         rev = sum(d["amount"] for d in docs if d["type"] == "receita" and d["due_date"].startswith(m))
