@@ -1,0 +1,51 @@
+{
+  "summary": "Completed end-to-end testing of ProClinic MVP (FastAPI + React + MongoDB). 19/19 backend pytest pass (100%). Frontend critical flows all working: login (right/wrong pw), JWT cookie + token, dashboard KPIs/cards, patients list+search+modal+detail tabs, agenda weekly view with seeded appointments, financeiro summary, AI Assistant chat with Claude 4.5 reply, theme toggle (light→dark), logout, protected route redirect, Google session 400 validation. Minor UX/design issues only — no blockers.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "CORS middleware", "issue": "allow_origins=['*'] combined with allow_credentials=True is technically invalid per spec (browsers can reject cookies for credentialed cross-origin requests). Works in current preview because samesite=none+secure but should be tightened to explicit origin list using FRONTEND_URL env in production."},
+      {"endpoint": "/api/finance/summary", "issue": "Chart month buckets are computed as (today - i*30 days) which can produce duplicate or skipped months around month boundaries (e.g. response showed two 2026-01 entries). Use calendar-month arithmetic instead."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Patients New Patient modal", "issue": "Form inputs (nome, cpf, telefone, email, etc.) lack data-testid and name attributes, making granular automated testing difficult. Add data-testid like 'patient-name-input', 'patient-cpf-input' etc.", "selector": "[data-testid='new-patient-form'] input", "priority": "LOW"},
+      {"component": "Dashboard / Financeiro recharts", "issue": "Console warnings 'width(-1) and height(-1) of chart should be greater than 0' — ResponsiveContainer has no minHeight/minWidth so first paint is invalid. Add minHeight to ResponsiveContainer parent or set aspect ratio.", "selector": "[data-testid='revenue-chart']", "priority": "LOW"},
+      {"component": "Dialogs (new-patient, new-appointment)", "issue": "Radix DialogContent missing Description/aria-describedby — a11y warning in console. Add <DialogDescription> or aria-describedby={undefined} attribute suppression.", "selector": "[role='dialog']", "priority": "LOW"},
+      {"component": "Patient modal date input", "issue": "Native browser date picker rendered as 'mm/dd/yyyy' (US locale, against pt-BR target). Replace with shadcn Calendar/DatePicker or set lang='pt-BR'.", "selector": "input[type='date']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Login + Dashboard", "issues": ["Visual is premium and on-brand (rose gold + champagne). Looks excellent."]},
+      {"screen": "Financeiro", "issues": ["Word 'Saldo' not surfaced as plain text in body (likely rendered inside chart legend only). Consider adding a 'Saldo do mês' KPI card alongside Receitas/Despesas for parity with PRD."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_proclinic_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Add data-testid attributes to inputs inside Novo Paciente / Novo Atendimento modals to enable field-level e2e testing.",
+    "Add minHeight to recharts ResponsiveContainer wrappers in Dashboard.jsx and Financeiro.jsx to remove width(-1)/height(-1) warning on first paint.",
+    "Add <DialogDescription> (or aria-describedby) inside Radix DialogContent components to satisfy a11y.",
+    "Switch date inputs from native <input type='date'> to a localized shadcn DatePicker (pt-BR dd/mm/yyyy).",
+    "Tighten CORS allow_origins in /app/backend/server.py to use FRONTEND_URL env var (with credentials=True).",
+    "Fix /api/finance/summary chart month iteration to use calendar months (avoid 30-day arithmetic duplicates near month boundaries)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 935 lines — recommend splitting into routers/ (auth.py, patients.py, appointments.py, finance.py, ai.py) and models.py for maintainability.",
+    "CORS allow_origins=['*'] with allow_credentials=True is a known spec violation; works in preview but is fragile.",
+    "finance_summary chart month computation uses i*30 days — can produce duplicate buckets (observed 2026-01 twice).",
+    "seed_data() runs on every startup — safe due to count checks, but consider an env flag SEED_ENABLE for production deployments.",
+    "Cookie set with secure=True samesite=none requires HTTPS — correct for preview, but local dev (http) would fail silently. Document this or branch by env."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_proclinic_api.py (NEW — 19 pytest cases covering health, auth, patients, appointments, medical-records, anamnesis, finance, dashboard, ai chat, google session)"
+  ],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "~95% — all critical flows pass; only minor a11y/console warnings and missing field-level testids"},
+  "test_credentials": "admin@proclinic.com / admin123 (verified working). Demo professional dra.bella@proclinic.com / bella123 also seeded.",
+  "seed_data_creation": "Seeded automatically by backend startup: 1 clinic (ProClinic Demo), 2 users (admin + Dra. Bella), 4 demo patients, ~20 appointments across 5 days, 7 financial entries. Verified visible in UI.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All endpoints in /app/backend/tests/test_proclinic_api.py — reuse for regression. Login uses both cookie httpOnly and Bearer token (frontend stores token in localStorage). AI Chat works with Claude 4.5 via Emergent LLM key. Patient modal does NOT expose per-field data-testids; rely on placeholders or labels. Route for AI Assistant is /assistente-ia (not /assistente). Theme toggle button exposed via data-testid='theme-toggle' (sidebar) and label 'Tema' button works."
+}
