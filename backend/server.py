@@ -9,10 +9,11 @@ import logging
 import bcrypt
 import jwt
 import httpx
+import requests
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Any, Dict
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query, UploadFile, File, Header
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
@@ -917,6 +918,445 @@ async def seed_data():
 
 
 # ============================================================
+# Object Storage (Emergent)
+# ============================================================
+STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
+APP_NAME = "proclinic"
+_storage_key: Optional[str] = None
+
+
+def init_storage() -> Optional[str]:
+    global _storage_key
+    if _storage_key:
+        return _storage_key
+    if not EMERGENT_LLM_KEY:
+        return None
+    try:
+        r = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
+        r.raise_for_status()
+        _storage_key = r.json()["storage_key"]
+        logger.info("Object storage initialized")
+        return _storage_key
+    except Exception as e:
+        logger.error(f"Storage init failed: {e}")
+        return None
+
+
+def put_object(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=500, detail="Object storage indisponível")
+    r = requests.put(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key, "Content-Type": content_type},
+        data=data, timeout=120,
+    )
+    if r.status_code == 403:
+        # refresh key
+        global _storage_key
+        _storage_key = None
+        key = init_storage()
+        r = requests.put(
+            f"{STORAGE_URL}/objects/{path}",
+            headers={"X-Storage-Key": key, "Content-Type": content_type},
+            data=data, timeout=120,
+        )
+    r.raise_for_status()
+    return r.json()
+
+
+def get_object(path: str):
+    key = init_storage()
+    if not key:
+        raise HTTPException(status_code=500, detail="Object storage indisponível")
+    r = requests.get(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key}, timeout=60,
+    )
+    r.raise_for_status()
+    return r.content, r.headers.get("Content-Type", "application/octet-stream")
+
+
+_MIME_BY_EXT = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "gif": "image/gif", "webp": "image/webp", "pdf": "application/pdf",
+}
+
+
+@api_router.post("/uploads")
+async def upload_file(
+    file: UploadFile = File(...),
+    user: dict = Depends(get_current_user),
+):
+    raw = await file.read()
+    if len(raw) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Arquivo maior que 12MB")
+    ext = (file.filename or "bin").rsplit(".", 1)[-1].lower()
+    content_type = file.content_type or _MIME_BY_EXT.get(ext, "application/octet-stream")
+    path = f"{APP_NAME}/{user['clinic_id']}/{user['user_id']}/{uuid.uuid4()}.{ext}"
+    result = put_object(path, raw, content_type)
+    file_id = f"file_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "file_id": file_id,
+        "storage_path": result["path"],
+        "original_filename": file.filename,
+        "content_type": content_type,
+        "size": result.get("size", len(raw)),
+        "clinic_id": user["clinic_id"],
+        "uploaded_by": user["user_id"],
+        "is_deleted": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.files.insert_one(doc)
+    return {
+        "file_id": file_id,
+        "url": f"/api/files/{result['path']}",
+        "path": result["path"],
+        "content_type": content_type,
+        "size": doc["size"],
+    }
+
+
+@api_router.get("/files/{path:path}")
+async def serve_file(path: str, request: Request, auth: Optional[str] = Query(None)):
+    # Allow auth via query param OR cookie OR header
+    if auth:
+        try:
+            payload = jwt.decode(auth, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            user = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0})
+            if not user:
+                raise HTTPException(status_code=401, detail="Inválido")
+        except Exception:
+            raise HTTPException(status_code=401, detail="Inválido")
+    else:
+        user = await get_current_user(request)
+    rec = await db.files.find_one(
+        {"storage_path": path, "is_deleted": False, "clinic_id": user["clinic_id"]},
+        {"_id": 0},
+    )
+    if not rec:
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado")
+    data, ct = get_object(path)
+    return Response(content=data, media_type=rec.get("content_type", ct))
+
+
+# ============================================================
+# Premium Anamnesis (multi-module)
+# ============================================================
+class AnamnesisModuleIn(BaseModel):
+    patient_id: str
+    module: Literal["geral", "facial", "corporal", "capilar"]
+    answers: Dict[str, Any]
+    signature: Optional[str] = None  # base64 png
+    signed: bool = False
+
+
+@api_router.post("/anamnesis-modules")
+async def save_anamnesis_module(data: AnamnesisModuleIn, user: dict = Depends(get_current_user)):
+    p = await db.patients.find_one(
+        {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]},
+        {"_id": 0, "name": 1},
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Paciente não encontrado")
+    # upsert by patient+module (latest version replaces draft)
+    existing = await db.anamnesis_modules.find_one(
+        {"patient_id": data.patient_id, "clinic_id": user["clinic_id"], "module": data.module},
+        {"_id": 0},
+    )
+    doc = data.model_dump()
+    doc.update({
+        "clinic_id": user["clinic_id"],
+        "patient_name": p["name"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    if existing:
+        doc["module_id"] = existing["module_id"]
+        doc["created_at"] = existing.get("created_at", doc["updated_at"])
+        await db.anamnesis_modules.update_one(
+            {"module_id": existing["module_id"]}, {"$set": doc}
+        )
+    else:
+        doc["module_id"] = f"anm_{uuid.uuid4().hex[:12]}"
+        doc["created_at"] = doc["updated_at"]
+        await db.anamnesis_modules.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/anamnesis-modules")
+async def list_anamnesis_modules(patient_id: str, user: dict = Depends(get_current_user)):
+    docs = await db.anamnesis_modules.find(
+        {"patient_id": patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0},
+    ).to_list(20)
+    return docs
+
+
+# ============================================================
+# Attendance Sessions (atendimento clínico)
+# ============================================================
+class AttendanceSessionIn(BaseModel):
+    appointment_id: Optional[str] = None
+    patient_id: str
+    procedure: Optional[str] = None
+    professional_name: Optional[str] = None
+    evolution: Optional[str] = ""
+    observations: Optional[str] = ""
+    protocols: Optional[str] = ""
+    prescriptions: Optional[str] = ""
+    products_used: Optional[str] = ""
+    photos_before: List[str] = []
+    photos_after: List[str] = []
+    consent_signature: Optional[str] = None  # base64
+    evolution_signature: Optional[str] = None  # base64
+    status: Literal["rascunho", "concluido"] = "rascunho"
+    duration_seconds: Optional[int] = 0
+
+
+@api_router.post("/attendance/start")
+async def start_attendance(
+    payload: Dict[str, Any], user: dict = Depends(get_current_user)
+):
+    """Start (or resume) an attendance session for an appointment."""
+    appointment_id = payload.get("appointment_id")
+    if not appointment_id:
+        raise HTTPException(status_code=400, detail="appointment_id obrigatório")
+    apt = await db.appointments.find_one(
+        {"appointment_id": appointment_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not apt:
+        raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    existing = await db.attendance_sessions.find_one(
+        {"appointment_id": appointment_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if existing:
+        return existing
+    session = {
+        "session_id": f"att_{uuid.uuid4().hex[:12]}",
+        "appointment_id": appointment_id,
+        "patient_id": apt["patient_id"],
+        "patient_name": apt.get("patient_name", ""),
+        "procedure": apt.get("procedure"),
+        "professional_name": apt.get("professional_name"),
+        "clinic_id": user["clinic_id"],
+        "status": "rascunho",
+        "evolution": "",
+        "observations": "",
+        "protocols": "",
+        "prescriptions": "",
+        "products_used": "",
+        "photos_before": [],
+        "photos_after": [],
+        "consent_signature": None,
+        "evolution_signature": None,
+        "duration_seconds": 0,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.attendance_sessions.insert_one(session)
+    session.pop("_id", None)
+    return session
+
+
+@api_router.put("/attendance/{session_id}")
+async def update_attendance(
+    session_id: str, data: AttendanceSessionIn, user: dict = Depends(get_current_user)
+):
+    """Autosave attendance session draft."""
+    update = data.model_dump(exclude_none=False)
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    res = await db.attendance_sessions.update_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]},
+        {"$set": update},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    doc = await db.attendance_sessions.find_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    return doc
+
+
+@api_router.post("/attendance/{session_id}/finalize")
+async def finalize_attendance(session_id: str, user: dict = Depends(get_current_user)):
+    """Finalize: marks session concluida, copies into medical_records, marks appointment concluido."""
+    sess = await db.attendance_sessions.find_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not sess:
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    # create medical record
+    record = {
+        "record_id": f"rec_{uuid.uuid4().hex[:12]}",
+        "clinic_id": user["clinic_id"],
+        "patient_id": sess["patient_id"],
+        "patient_name": sess.get("patient_name"),
+        "procedure": sess.get("procedure") or "Atendimento",
+        "professional_name": sess.get("professional_name"),
+        "evolution": sess.get("evolution") or "",
+        "observations": sess.get("observations") or "",
+        "protocols": sess.get("protocols") or "",
+        "prescriptions": sess.get("prescriptions") or "",
+        "photos_before": sess.get("photos_before") or [],
+        "photos_after": sess.get("photos_after") or [],
+        "signed": bool(sess.get("evolution_signature")),
+        "signature": sess.get("evolution_signature"),
+        "duration_seconds": sess.get("duration_seconds") or 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.medical_records.insert_one(record)
+    record.pop("_id", None)
+    # mark session concluida
+    await db.attendance_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {"status": "concluido", "finalized_at": record["created_at"]}},
+    )
+    # mark appointment concluido
+    if sess.get("appointment_id"):
+        await db.appointments.update_one(
+            {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
+            {"$set": {"status": "concluido"}},
+        )
+    return {"ok": True, "record_id": record["record_id"]}
+
+
+@api_router.get("/attendance/by-appointment/{appointment_id}")
+async def get_attendance_by_appointment(appointment_id: str, user: dict = Depends(get_current_user)):
+    sess = await db.attendance_sessions.find_one(
+        {"appointment_id": appointment_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not sess:
+        return None
+    return sess
+
+
+# ============================================================
+# AI Clinical Helpers
+# ============================================================
+class AISummaryIn(BaseModel):
+    type: Literal["evolution", "protocol", "session_summary", "anamnesis_summary"]
+    patient_id: Optional[str] = None
+    context: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@api_router.post("/ai/generate")
+async def ai_generate(data: AISummaryIn, user: dict = Depends(get_current_user)):
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=500, detail="Chave LLM não configurada")
+    patient_ctx = ""
+    if data.patient_id:
+        p = await db.patients.find_one(
+            {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+        )
+        if p:
+            patient_ctx = f"Paciente: {p.get('name')} | Alergias: {p.get('allergies') or '—'} | Medicamentos: {p.get('medications') or '—'}"
+    PROMPTS = {
+        "evolution": (
+            "Você é uma assistente clínica. Com base nos dados abaixo, escreva uma EVOLUÇÃO CLÍNICA "
+            "concisa (até 6 linhas), em português do Brasil, técnica, sem diagnósticos, sem prescrições. "
+            f"\n{patient_ctx}\nObservações do profissional: {data.notes or '—'}\nContexto: {data.context or '—'}"
+        ),
+        "protocol": (
+            "Sugira um PROTOCOLO de até 4 sessões para o caso abaixo. Liste objetivo de cada sessão, "
+            "intervalo entre sessões e cuidados pós. Português do Brasil. Não prescreva medicamentos. "
+            "Lembre que a decisão final é sempre do profissional.\n"
+            f"{patient_ctx}\nDemanda: {data.context or '—'}\nNotas: {data.notes or '—'}"
+        ),
+        "session_summary": (
+            "Faça um RESUMO da sessão clínica abaixo, em até 4 linhas, em português do Brasil. "
+            "Use linguagem técnica e objetiva.\n"
+            f"{patient_ctx}\nDados da sessão: {data.notes or '—'}"
+        ),
+        "anamnesis_summary": (
+            "Resuma a anamnese abaixo em até 5 linhas destacando pontos clinicamente relevantes "
+            "(alergias, medicações, contraindicações, queixas principais). Português do Brasil.\n"
+            f"{patient_ctx}\nAnamnese: {data.notes or '—'}"
+        ),
+    }
+    prompt = PROMPTS[data.type]
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"gen_{user['user_id']}_{uuid.uuid4().hex[:8]}",
+        system_message=(
+            "Você é uma assistente clínica do ProClinic, atuando como apoio operacional. "
+            "NÃO diagnostique. NÃO prescreva medicamentos. Sempre lembre que a avaliação "
+            "final é do profissional. Responda em português do Brasil de forma técnica e objetiva."
+        ),
+    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+    try:
+        reply = await chat.send_message(UserMessage(text=prompt))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro IA: {e}")
+    return {"text": reply}
+
+
+# ============================================================
+# Patient quick-completion (check if profile complete)
+# ============================================================
+@api_router.get("/patients/{patient_id}/completeness")
+async def patient_completeness(patient_id: str, user: dict = Depends(get_current_user)):
+    p = await db.patients.find_one(
+        {"patient_id": patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Paciente não encontrado")
+    required = ["name", "cpf", "birth_date", "phone", "lgpd_consent"]
+    missing = [k for k in required if not p.get(k)]
+    return {"complete": len(missing) == 0, "missing": missing, "patient": p}
+
+
+# ============================================================
+# Message Center (WhatsApp scaffolding — provider stub now)
+# ============================================================
+class MessageIn(BaseModel):
+    patient_id: str
+    template: Optional[str] = None
+    body: str
+    channel: Literal["whatsapp", "sms", "email"] = "whatsapp"
+
+
+@api_router.post("/messages")
+async def send_message(data: MessageIn, user: dict = Depends(get_current_user)):
+    """Enqueue a message. Provider integration plugged in later (Evolution API)."""
+    p = await db.patients.find_one(
+        {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]},
+        {"_id": 0, "name": 1, "whatsapp": 1, "phone": 1, "email": 1},
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Paciente não encontrado")
+    msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "message_id": msg_id,
+        "clinic_id": user["clinic_id"],
+        "patient_id": data.patient_id,
+        "patient_name": p["name"],
+        "destination": p.get("whatsapp") or p.get("phone") or p.get("email"),
+        "channel": data.channel,
+        "template": data.template,
+        "body": data.body,
+        "status": "queued",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "sent_at": None,
+        "error": None,
+    }
+    await db.messages.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/messages")
+async def list_messages(
+    patient_id: Optional[str] = None, user: dict = Depends(get_current_user)
+):
+    q = {"clinic_id": user["clinic_id"]}
+    if patient_id:
+        q["patient_id"] = patient_id
+    docs = await db.messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return docs
+
+
+# ============================================================
 # App setup
 # ============================================================
 app.include_router(api_router)
@@ -932,6 +1372,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
+    init_storage()
     await seed_data()
 
 

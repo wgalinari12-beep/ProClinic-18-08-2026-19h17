@@ -1,0 +1,55 @@
+{
+  "summary": "Phase 2 ProClinic — tested 11 new backend endpoints (24 pytest cases) + critical frontend flows. Backend 22/24 PASS (91.6%). Two failures both rooted in ONE bug: PUT /api/attendance/{session_id} uses Pydantic `model_dump(exclude_none=False)` and Optional fields default to None — autosave therefore overwrites `appointment_id` (and any other Optional unset field) to None on the existing session. This breaks GET /api/attendance/by-appointment/{aid} after first autosave and makes /finalize unable to mark the appointment as concluido (sess['appointment_id'] is None). Frontend critical Phase 2 wins all verified: login works, clicking an appointment card opens ONLY the detail dialog (data-testid='appointment-detail-dialog') with Paciente/Procedimento/Quando/Sala/Valor/Status and Confirmar/WhatsApp/Cancelar/Excluir/Iniciar atendimento buttons — the previous double-modal bug is GONE; Mensagens page lists queued messages with Evolution-API-pending banner; sidebar shows nav-mensagens link.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "PUT /api/attendance/{session_id}",
+        "issue": "Autosave overwrites `appointment_id` (and any other Optional field that the client doesn't send) to None because AttendanceSessionIn has appointment_id Optional[str]=None and the route does `data.model_dump(exclude_none=False)`. Consequences: (1) GET /api/attendance/by-appointment/{aid} returns null right after the first autosave, breaking 'retomar atendimento'; (2) /finalize uses sess.get('appointment_id') to mark the appointment concluido — so the appointment STAYS as 'agendado' even after finalize. Fix: change to `data.model_dump(exclude_unset=True)` OR exclude immutable identity fields (appointment_id, patient_id) from the update set, OR remove them from AttendanceSessionIn entirely.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {"endpoint": "POST /api/attendance/{session_id}/finalize", "issue": "Uses appointments.update_one without checking matched_count; if appointment_id is missing (bug above) it silently no-ops. Add logging or return record_id+appointment_status."},
+      {"endpoint": "GET /api/files/{path:path}", "issue": "Path traversal not validated. A clinic_id check guards via DB lookup, but consider rejecting '..' segments explicitly."},
+      {"endpoint": "POST /api/uploads", "issue": "MIME validation is permissive (accepts content_type from client). For an aesthetic clinic that stores patient photos, enforce a whitelist (image/jpeg, image/png, image/webp, application/pdf) before put_object."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Radix DialogContent (multiple dialogs)", "issue": "Console still warns 'Missing Description or aria-describedby for DialogContent' on the new-appointment dialog and detail dialog. A11y regression from Phase 1.", "selector": "[role='dialog']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Detail dialog", "issues": ["Layout, copy, fields and CTAs (Confirmar/WhatsApp/Cancelar/Excluir/Iniciar atendimento) look polished and on-brand. The badge 'agendado' uses the rose-gold accent — consistent with theme."]},
+      {"screen": "Central de Mensagens", "issues": ["Banner 'Integração Evolution API pendente' is clear and well-styled. Empty-vs-populated states both look good."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_api.py",
+    "/app/backend/tests/test_proclinic_api.py",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "action_items": [
+    "HIGH: Fix PUT /api/attendance/{session_id} so autosave does NOT null out appointment_id. Recommended: replace `data.model_dump(exclude_none=False)` with `data.model_dump(exclude_unset=True)` AND/OR drop appointment_id from AttendanceSessionIn (it shouldn't be mutable via autosave).",
+    "After the fix, rerun: pytest /app/backend/tests/test_phase2_api.py::TestAttendance — the 2 failing cases (test_update_and_by_appointment, test_finalize_creates_record_and_marks_apt) should both pass.",
+    "Whitelist allowed MIME types in POST /api/uploads.",
+    "Add <DialogDescription> (or aria-describedby={undefined}) to Radix DialogContent in NewAppointmentDialog, AppointmentDetailDialog, AttendanceDialog to silence a11y warning."
+  ],
+  "critical_code_review_comments": [
+    "AttendanceSessionIn mixes mutable session fields (evolution, observations…) with identity fields (appointment_id, patient_id). Split into AttendanceCreateIn vs AttendanceUpdateIn to avoid this class of accidental-overwrite bug.",
+    "Object storage init_storage() uses requests (sync) inside a sync helper called from async routes. Works because put_object is invoked via Starlette's threadpool for sync def, but the @api_router.post('/uploads') handler is async and directly calls put_object → blocks the event loop on a 12MB upload. Consider httpx.AsyncClient or run_in_threadpool.",
+    "server.py is now 1380 lines. Strongly recommend splitting into routers/auth.py, routers/patients.py, routers/agenda.py, routers/attendance.py, routers/storage.py, routers/ai.py, routers/messages.py.",
+    "AISummaryIn validation: type uses Literal but errors out with 500 not 422 when invalid (because of FastAPI exception path) — actually FastAPI returns 422; keep an eye on this.",
+    "POST /api/messages does not enforce that body is non-empty; allows {body:''} to be queued. Add Field(min_length=1)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_api.py (NEW — 24 cases covering all Phase 2 endpoints + auth-protection + multi-tenant)"
+  ],
+  "success_rate": {"backend": "91.6% (22/24)", "frontend": "~95% — all critical Phase 2 flows verified visually and via DOM testids; double-modal bug confirmed FIXED"},
+  "test_credentials": "admin@proclinic.com / admin123",
+  "seed_data_creation": "Reused existing Phase 1 seed (4 patients, ~20 appointments). Created TEST_-prefixed transient appointments + attendance sessions during finalize test (cleaned up).",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 backend file: /app/backend/tests/test_phase2_api.py. Run with REACT_APP_BACKEND_URL env set. The 2 failures are caused by ONE root bug in server.py update_attendance (line ~1167): change exclude_none=False to exclude_unset=True. After fix verify GET /api/attendance/by-appointment returns the session AND that /finalize marks the appointment 'concluido'. Frontend testids: appointment cards = 'apt-block-{apt_id}', cells = 'agenda-cell-{date}_{hour}', detail dialog = 'appointment-detail-dialog', attendance dialog = 'attendance-dialog', completion stage = 'completion-step', timer = 'attendance-timer', new appointment dialog = 'new-appointment-dialog'. Sidebar mensagens link = 'nav-mensagens'.",
+  "rca of the issue": "ROOT CAUSE — server.py update_attendance (~line 1161-1177): `update = data.model_dump(exclude_none=False)` includes ALL Pydantic fields, defaulting Optional unset ones to None. AttendanceSessionIn.appointment_id is Optional[str]=None. The frontend autosave POSTs only the fields it owns (evolution, observations, photos…), so the request body parses with appointment_id=None, and the $set wipes the original appointment_id stored at /start time. Subsequent by-appointment lookups return null and /finalize cannot mark the appointment concluido. REPRO: 1) POST /api/attendance/start {appointment_id: <apt>} → returns session with appointment_id populated. 2) PUT /api/attendance/{session_id} with body {patient_id:<p>, evolution:'x'} → returns session with appointment_id=null. 3) GET /api/attendance/by-appointment/<apt> → null. 4) POST /api/attendance/{session_id}/finalize → returns ok but appointment status remains 'agendado'. MITIGATION: `update = data.model_dump(exclude_unset=True)` OR drop appointment_id from AttendanceSessionIn (it's an identity field, not session content)."
+}

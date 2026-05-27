@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Users, Calendar, FileText, ClipboardList,
   Wallet, Sparkles, Settings, LogOut, Sun, Moon, ChevronsLeft,
-  Stethoscope, ChevronsRight,
+  Stethoscope, ChevronsRight, MessageSquare,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -16,6 +16,7 @@ const NAV = [
   { to: "/prontuario", icon: FileText, label: "Prontuário" },
   { to: "/anamnese", icon: ClipboardList, label: "Anamnese" },
   { to: "/financeiro", icon: Wallet, label: "Financeiro" },
+  { to: "/mensagens", icon: MessageSquare, label: "Mensagens" },
   { to: "/assistente-ia", icon: Sparkles, label: "Assistente IA" },
 ];
 

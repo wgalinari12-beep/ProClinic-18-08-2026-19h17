@@ -18,6 +18,7 @@ import Anamnese from "@/pages/Anamnese";
 import Financeiro from "@/pages/Financeiro";
 import AIAssistant from "@/pages/AIAssistant";
 import Configuracoes from "@/pages/Configuracoes";
+import Mensagens from "@/pages/Mensagens";
 
 function AppRouter() {
   const location = useLocation();
@@ -45,6 +46,7 @@ function AppRouter() {
         <Route path="prontuario" element={<Prontuario />} />
         <Route path="anamnese" element={<Anamnese />} />
         <Route path="financeiro" element={<Financeiro />} />
+        <Route path="mensagens" element={<Mensagens />} />
         <Route path="assistente-ia" element={<AIAssistant />} />
         <Route path="configuracoes" element={<Configuracoes />} />
       </Route>
