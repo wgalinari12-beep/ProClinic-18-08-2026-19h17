@@ -245,6 +245,15 @@ class TestUploads:
         r = requests.post(f"{API}/uploads", files=files)
         assert r.status_code == 401
 
+    def test_upload_rejects_non_whitelisted_mime(self, auth):
+        # text/plain not in whitelist → 400
+        files = {"file": ("evil.txt", io.BytesIO(b"hello world"), "text/plain")}
+        r = requests.post(f"{API}/uploads",
+                          headers={"Authorization": auth["headers"]["Authorization"]},
+                          files=files)
+        assert r.status_code == 400, r.text
+        assert "permitido" in r.text.lower() or "allowed" in r.text.lower() or "not" in r.text.lower()
+
 
 # ---------- 5. AI generate ----------
 class TestAIGenerate:
@@ -294,6 +303,12 @@ class TestMessages:
         r = requests.post(f"{API}/messages", headers=auth["headers"],
                           json={"patient_id": "pat_nope", "body": "x"})
         assert r.status_code == 404
+
+    def test_create_empty_body_rejected(self, auth, seed_patient):
+        # body='' must fail with 422 (Field min_length=1)
+        r = requests.post(f"{API}/messages", headers=auth["headers"],
+                          json={"patient_id": seed_patient["patient_id"], "body": "", "channel": "whatsapp"})
+        assert r.status_code == 422, r.text
 
     def test_unauth(self):
         r = requests.get(f"{API}/messages")

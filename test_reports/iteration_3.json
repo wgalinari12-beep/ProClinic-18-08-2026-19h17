@@ -1,0 +1,37 @@
+{
+  "summary": "ProClinic Fase 2 RETEST — backend only. All fixes from iteration 2 verified. Phase 2: 26/26 pytest PASS (was 22/24; added 2 new validation tests for MIME whitelist and empty body). Phase 1 regression: 19/19 pytest PASS (no regressions). Grand total: 45/45 (100%).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/uploads", "issue": "init_storage() uses sync `requests` inside an `async` handler; blocks event loop for 12MB uploads. Use `httpx.AsyncClient` or `run_in_threadpool` (carry-over from iteration 2, NON-blocking for tests)."},
+      {"endpoint": "GET /api/files/{path:path}", "issue": "Explicit '..' / leading-slash rejection still missing on the serve route (upload route filters filename but the GET path:path is regex-anchored — fine for now, just defensive nit)."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_api.py",
+    "/app/backend/tests/test_proclinic_api.py",
+    "/app/test_reports/pytest/phase2_results.xml",
+    "/app/test_reports/pytest/phase1_results.xml"
+  ],
+  "action_items": [
+    "Carry-over (LOW): wrap put_object in run_in_threadpool for true async uploads.",
+    "Carry-over (LOW): a11y — add <DialogDescription> to Radix DialogContent (Phase 2 dialogs)."
+  ],
+  "critical_code_review_comments": [
+    "update_attendance fix is clean and correct: model_dump(exclude_unset=True) + explicit .pop of identity fields gives belt-and-suspenders defense.",
+    "MIME whitelist set _ALLOWED_UPLOAD_MIMES is right-sized for an aesthetic clinic (jpeg/png/webp/gif/pdf). Filename traversal check ('..' or '/') is in place.",
+    "MessageIn.body Field(min_length=1) correctly returns 422 (Pydantic validation) — confirmed by new test_create_empty_body_rejected.",
+    "server.py is now ~1395 lines — split recommendation from iteration 2 still stands but is non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_api.py (added test_upload_rejects_non_whitelisted_mime, test_create_empty_body_rejected — 24→26 cases)"
+  ],
+  "success_rate": {"backend": "100% (45/45: 26 Phase 2 + 19 Phase 1)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "admin@proclinic.com / admin123 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Reused existing Phase 1 seed. TEST_-prefixed transient records created+cleaned during finalize/by-appointment tests.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All three Iteration-2 HIGH/medium bugs are FIXED and covered by automated tests: (1) PUT /api/attendance/{session_id} now uses model_dump(exclude_unset=True) AND explicitly pops appointment_id/patient_id — autosave preserves identity, by-appointment finds the session, finalize correctly marks appointment 'concluido'. (2) POST /api/uploads rejects non-whitelisted MIME with 400 (allowed: image/jpeg, image/png, image/webp, image/gif, application/pdf). (3) MessageIn.body has Field(min_length=1) → empty body returns 422. Run /app/backend/tests/test_phase2_api.py and test_proclinic_api.py — current baseline is 45/45 green. Frontend testids and Phase 2 critical flows already validated in iteration 2.",
+  "rca of the issue": "All previously reported root causes addressed in iteration-2 fix and verified here. update_attendance now scopes the update set strictly to fields the client sent and explicitly removes identity fields — eliminates the autosave wipe of appointment_id."
+}

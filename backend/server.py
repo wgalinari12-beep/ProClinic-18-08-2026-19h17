@@ -983,6 +983,11 @@ _MIME_BY_EXT = {
 }
 
 
+_ALLOWED_UPLOAD_MIMES = {
+    "image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf",
+}
+
+
 @api_router.post("/uploads")
 async def upload_file(
     file: UploadFile = File(...),
@@ -993,6 +998,10 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="Arquivo maior que 12MB")
     ext = (file.filename or "bin").rsplit(".", 1)[-1].lower()
     content_type = file.content_type or _MIME_BY_EXT.get(ext, "application/octet-stream")
+    if content_type not in _ALLOWED_UPLOAD_MIMES:
+        raise HTTPException(status_code=400, detail=f"Tipo de arquivo não permitido: {content_type}")
+    if ".." in file.filename or "/" in file.filename:
+        raise HTTPException(status_code=400, detail="Nome de arquivo inválido")
     path = f"{APP_NAME}/{user['clinic_id']}/{user['user_id']}/{uuid.uuid4()}.{ext}"
     result = put_object(path, raw, content_type)
     file_id = f"file_{uuid.uuid4().hex[:12]}"
@@ -1162,8 +1171,12 @@ async def start_attendance(
 async def update_attendance(
     session_id: str, data: AttendanceSessionIn, user: dict = Depends(get_current_user)
 ):
-    """Autosave attendance session draft."""
-    update = data.model_dump(exclude_none=False)
+    """Autosave attendance session draft. Identity fields (appointment_id, patient_id)
+    cannot be mutated here — only session content."""
+    update = data.model_dump(exclude_unset=True)
+    # Identity fields are immutable post-creation
+    update.pop("appointment_id", None)
+    update.pop("patient_id", None)
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
     res = await db.attendance_sessions.update_one(
         {"session_id": session_id, "clinic_id": user["clinic_id"]},
@@ -1312,7 +1325,7 @@ async def patient_completeness(patient_id: str, user: dict = Depends(get_current
 class MessageIn(BaseModel):
     patient_id: str
     template: Optional[str] = None
-    body: str
+    body: str = Field(..., min_length=1)
     channel: Literal["whatsapp", "sms", "email"] = "whatsapp"
 
 

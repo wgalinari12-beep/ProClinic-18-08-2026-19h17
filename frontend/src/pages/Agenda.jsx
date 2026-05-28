@@ -4,7 +4,7 @@ import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { ChevronLeft, ChevronRight, Plus, Play, X, Trash2, Pencil, Phone, MessageSquare } from "lucide-react";
 import {
@@ -399,7 +399,10 @@ export default function Agenda() {
       {/* New appointment dialog */}
       <Dialog open={dialogMode === "new"} onOpenChange={(o) => { if (!o) closeDialog(); }}>
         <DialogContent className="rounded-2xl">
-          <DialogHeader><DialogTitle className="font-display text-2xl tracking-tight">Novo atendimento</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <DialogTitle className="font-display text-2xl tracking-tight">Novo atendimento</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">Agende um novo procedimento</DialogDescription>
+          </DialogHeader>
           {newForm && (
             <form onSubmit={createAppointment} className="grid grid-cols-2 gap-4" data-testid="appointment-form">
               <div className="col-span-2 space-y-1.5">
@@ -466,7 +469,7 @@ export default function Agenda() {
             <>
               <DialogHeader>
                 <DialogTitle className="font-display text-2xl tracking-tight">{selected.patient_name}</DialogTitle>
-                <p className="text-sm text-muted-foreground">{selected.procedure} · {selected.professional_name || "—"}</p>
+                <DialogDescription className="text-sm text-muted-foreground">{selected.procedure} · {selected.professional_name || "—"}</DialogDescription>
               </DialogHeader>
               <div className="space-y-3">
                 <div className="flex items-center justify-between text-sm">

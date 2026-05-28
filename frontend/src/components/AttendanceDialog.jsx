@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import api from "@/lib/api";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -242,9 +242,9 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
               <DialogTitle className="font-display text-xl tracking-tight">
                 {appointment?.patient_name || "Atendimento"}
               </DialogTitle>
-              <div className="text-xs text-muted-foreground mt-1">
+              <DialogDescription className="text-xs text-muted-foreground mt-1">
                 {appointment?.procedure} · {appointment?.professional_name || "—"}
-              </div>
+              </DialogDescription>
             </div>
             <div className="flex items-center gap-3">
               {stage === "inProgress" && (
