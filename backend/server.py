@@ -84,6 +84,7 @@ class PatientIn(BaseModel):
     photo_url: Optional[str] = None
     lgpd_consent: bool = False
     status: str = "ativo"
+    is_pre_registered: bool = False
 
 
 class PatientOut(PatientIn):
@@ -1056,6 +1057,7 @@ class AnamnesisModuleIn(BaseModel):
     patient_id: str
     module: Literal["geral", "facial", "corporal", "capilar"]
     answers: Dict[str, Any]
+    photos: Optional[List[str]] = None
     signature: Optional[str] = None  # base64 png
     signed: bool = False
 
@@ -1367,6 +1369,309 @@ async def list_messages(
         q["patient_id"] = patient_id
     docs = await db.messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
     return docs
+
+
+# ============================================================
+# Procedures (catálogo de procedimentos da clínica)
+# ============================================================
+class ProcedureIn(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: Optional[str] = None
+    price: float = 0
+    duration_minutes: int = 60
+    category: Optional[str] = None
+    active: bool = True
+
+
+@api_router.get("/procedures")
+async def list_procedures(active_only: bool = False, user: dict = Depends(get_current_user)):
+    q = {"clinic_id": user["clinic_id"]}
+    if active_only:
+        q["active"] = True
+    docs = await db.procedures.find(q, {"_id": 0}).sort("name", 1).to_list(500)
+    return docs
+
+
+@api_router.post("/procedures")
+async def create_procedure(data: ProcedureIn, user: dict = Depends(get_current_user)):
+    proc_id = f"proc_{uuid.uuid4().hex[:12]}"
+    doc = data.model_dump()
+    doc.update({
+        "procedure_id": proc_id,
+        "clinic_id": user["clinic_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.procedures.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/procedures/{procedure_id}")
+async def update_procedure(procedure_id: str, data: ProcedureIn, user: dict = Depends(get_current_user)):
+    res = await db.procedures.update_one(
+        {"procedure_id": procedure_id, "clinic_id": user["clinic_id"]},
+        {"$set": data.model_dump()},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Procedimento não encontrado")
+    doc = await db.procedures.find_one(
+        {"procedure_id": procedure_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    return doc
+
+
+@api_router.delete("/procedures/{procedure_id}")
+async def delete_procedure(procedure_id: str, user: dict = Depends(get_current_user)):
+    await db.procedures.delete_one(
+        {"procedure_id": procedure_id, "clinic_id": user["clinic_id"]}
+    )
+    return {"ok": True}
+
+
+# ============================================================
+# Clinic Settings (Minha Clínica)
+# ============================================================
+class ClinicSettingsIn(BaseModel):
+    name: Optional[str] = None
+    legal_name: Optional[str] = None
+    cnpj: Optional[str] = None
+    state_registration: Optional[str] = None
+    phone: Optional[str] = None
+    whatsapp: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
+    address: Optional[str] = None
+    zipcode: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = "Brasil"
+    technical_responsible_name: Optional[str] = None
+    technical_responsible_council: Optional[str] = None
+    technical_responsible_number: Optional[str] = None
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
+    tiktok: Optional[str] = None
+    youtube: Optional[str] = None
+    logo_url: Optional[str] = None
+
+
+@api_router.get("/clinic")
+async def get_clinic(user: dict = Depends(get_current_user)):
+    doc = await db.clinics.find_one(
+        {"clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    return doc or {"clinic_id": user["clinic_id"], "name": "Minha Clínica"}
+
+
+@api_router.put("/clinic")
+async def update_clinic(data: ClinicSettingsIn, user: dict = Depends(get_current_user)):
+    update = data.model_dump(exclude_none=False)
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.clinics.update_one(
+        {"clinic_id": user["clinic_id"]},
+        {"$set": update},
+        upsert=True,
+    )
+    doc = await db.clinics.find_one(
+        {"clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    return doc
+
+
+# ============================================================
+# Public appointment confirmation (no auth)
+# ============================================================
+def make_confirmation_token(appointment_id: str) -> str:
+    payload = {
+        "apt": appointment_id,
+        "scope": "confirmation",
+        "exp": datetime.now(timezone.utc) + timedelta(days=30),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def decode_confirmation_token(token: str) -> str:
+    try:
+        p = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if p.get("scope") != "confirmation":
+            raise HTTPException(status_code=401, detail="Token inválido")
+        return p["apt"]
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Link expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Link inválido")
+
+
+@api_router.get("/appointments/{appointment_id}/confirmation-link")
+async def get_confirmation_link(appointment_id: str, user: dict = Depends(get_current_user)):
+    apt = await db.appointments.find_one(
+        {"appointment_id": appointment_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not apt:
+        raise HTTPException(status_code=404, detail="Não encontrado")
+    token = make_confirmation_token(appointment_id)
+    return {"token": token}
+
+
+@api_router.get("/public/appointment/{token}")
+async def public_get_appointment(token: str):
+    apt_id = decode_confirmation_token(token)
+    apt = await db.appointments.find_one({"appointment_id": apt_id}, {"_id": 0})
+    if not apt:
+        raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    clinic = await db.clinics.find_one({"clinic_id": apt["clinic_id"]}, {"_id": 0}) or {}
+    patient = await db.patients.find_one({"patient_id": apt["patient_id"]}, {"_id": 0, "name": 1}) or {}
+    return {
+        "appointment": {
+            "patient_name": patient.get("name") or apt.get("patient_name"),
+            "procedure": apt.get("procedure"),
+            "professional_name": apt.get("professional_name"),
+            "start": apt.get("start"),
+            "end": apt.get("end"),
+            "room": apt.get("room"),
+            "status": apt.get("status"),
+            "confirmation_status": apt.get("confirmation_status"),
+        },
+        "clinic": {
+            "name": clinic.get("name") or "Clínica",
+            "logo_url": clinic.get("logo_url"),
+            "phone": clinic.get("phone"),
+            "whatsapp": clinic.get("whatsapp"),
+            "address": clinic.get("address"),
+            "city": clinic.get("city"),
+            "state": clinic.get("state"),
+            "instagram": clinic.get("instagram"),
+        },
+    }
+
+
+class PublicActionIn(BaseModel):
+    action: Literal["confirm", "cancel", "reschedule"]
+    reschedule_note: Optional[str] = None
+
+
+@api_router.post("/public/appointment/{token}/action")
+async def public_action_appointment(token: str, data: PublicActionIn):
+    apt_id = decode_confirmation_token(token)
+    apt = await db.appointments.find_one({"appointment_id": apt_id}, {"_id": 0})
+    if not apt:
+        raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    update: Dict[str, Any] = {"confirmation_action_at": datetime.now(timezone.utc).isoformat()}
+    if data.action == "confirm":
+        update["confirmation_status"] = "CONFIRMADO"
+        update["status"] = "confirmado"
+    elif data.action == "cancel":
+        update["confirmation_status"] = "CANCELADO"
+        update["status"] = "cancelado"
+    elif data.action == "reschedule":
+        update["confirmation_status"] = "REAGENDAMENTO_SOLICITADO"
+        update["reschedule_note"] = data.reschedule_note or ""
+    await db.appointments.update_one({"appointment_id": apt_id}, {"$set": update})
+    return {"ok": True, "confirmation_status": update["confirmation_status"]}
+
+
+# ============================================================
+# Mobile upload token (QR Code → mobile camera)
+# ============================================================
+class MobileUploadInitIn(BaseModel):
+    context_type: Literal["anamnesis", "session"] = "anamnesis"
+    context_id: str  # module_id, session_id, etc.
+    label: Optional[str] = None  # ficha module name
+
+
+def make_mobile_upload_token(clinic_id: str, user_id: str, context_type: str, context_id: str) -> str:
+    payload = {
+        "scope": "mobile_upload",
+        "clinic_id": clinic_id,
+        "user_id": user_id,
+        "ctx_type": context_type,
+        "ctx_id": context_id,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=20),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+@api_router.post("/mobile-upload/init")
+async def mobile_upload_init(data: MobileUploadInitIn, user: dict = Depends(get_current_user)):
+    token = make_mobile_upload_token(user["clinic_id"], user["user_id"], data.context_type, data.context_id)
+    return {"token": token, "expires_in_minutes": 20}
+
+
+@api_router.get("/mobile-upload/verify/{token}")
+async def mobile_upload_verify(token: str):
+    try:
+        p = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if p.get("scope") != "mobile_upload":
+            raise HTTPException(status_code=401, detail="Token inválido")
+        return {"ok": True, "context_type": p["ctx_type"], "context_id": p["ctx_id"]}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="QR Code expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+
+@api_router.post("/mobile-upload/upload")
+async def mobile_upload_upload(
+    token: str = Query(...),
+    file: UploadFile = File(...),
+):
+    try:
+        p = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if p.get("scope") != "mobile_upload":
+            raise HTTPException(status_code=401, detail="Token inválido")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="QR Code expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+    clinic_id = p["clinic_id"]
+    user_id = p["user_id"]
+    raw = await file.read()
+    if len(raw) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Arquivo maior que 12MB")
+    ext = (file.filename or "jpg").rsplit(".", 1)[-1].lower()
+    content_type = file.content_type or _MIME_BY_EXT.get(ext, "application/octet-stream")
+    if content_type not in _ALLOWED_UPLOAD_MIMES:
+        raise HTTPException(status_code=400, detail=f"Tipo não permitido: {content_type}")
+    path = f"{APP_NAME}/{clinic_id}/{user_id}/{uuid.uuid4()}.{ext}"
+    result = put_object(path, raw, content_type)
+    doc = {
+        "file_id": f"file_{uuid.uuid4().hex[:12]}",
+        "storage_path": result["path"],
+        "original_filename": file.filename,
+        "content_type": content_type,
+        "size": result.get("size", len(raw)),
+        "clinic_id": clinic_id,
+        "uploaded_by": user_id,
+        "is_deleted": False,
+        "context_type": p["ctx_type"],
+        "context_id": p["ctx_id"],
+        "from_mobile": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.files.insert_one(doc)
+    # If anamnesis context, append URL to module.photos
+    if p["ctx_type"] == "anamnesis":
+        await db.anamnesis_modules.update_one(
+            {"module_id": p["ctx_id"]},
+            {"$push": {"photos": f"/api/files/{result['path']}"}},
+        )
+    return {"ok": True, "url": f"/api/files/{result['path']}"}
+
+
+@api_router.get("/mobile-upload/files/{token}")
+async def mobile_upload_files(token: str):
+    """List uploaded files for a context (polled by desktop UI to refresh)."""
+    try:
+        p = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if p.get("scope") != "mobile_upload":
+            raise HTTPException(status_code=401, detail="Token inválido")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token inválido")
+    docs = await db.files.find(
+        {"context_type": p["ctx_type"], "context_id": p["ctx_id"], "is_deleted": False},
+        {"_id": 0, "storage_path": 1, "created_at": 1},
+    ).sort("created_at", -1).to_list(50)
+    return [{"url": f"/api/files/{d['storage_path']}", "created_at": d["created_at"]} for d in docs]
 
 
 # ============================================================

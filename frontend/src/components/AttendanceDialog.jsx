@@ -9,7 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
   Clock, AlertCircle, Save, Sparkles, FileSignature, CheckCircle2,
-  ClipboardList, FileText, ImageIcon, Pill, Loader2, X,
+  ClipboardList, FileText, Pill, Loader2, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import PhotoUploader from "@/components/PhotoUploader";
@@ -146,6 +146,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       await api.put(`/patients/${patient.patient_id}`, {
         ...pForm,
         lgpd_consent: !!pForm.lgpd_consent,
+        is_pre_registered: false,
       });
       const { data: sess } = await api.post(`/attendance/start`, {
         appointment_id: appointment.appointment_id,
@@ -219,9 +220,9 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
         duration_seconds: seconds,
       });
       await api.post(`/attendance/${session.session_id}/finalize`);
-      setStage("done");
       toast.success("Atendimento concluído");
       onCompleted?.();
+      onOpenChange(false);
     } catch (e) {
       toast.error("Erro ao finalizar");
     } finally { setBusy(false); }
@@ -329,9 +330,6 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                   <TabsTrigger value="evolucao" data-testid="tab-evolucao" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                     <FileText className="h-3.5 w-3.5 mr-1.5" />Evolução
                   </TabsTrigger>
-                  <TabsTrigger value="fotos" data-testid="tab-fotos" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
-                    <ImageIcon className="h-3.5 w-3.5 mr-1.5" />Fotos
-                  </TabsTrigger>
                   <TabsTrigger value="prescricao" data-testid="tab-prescricao" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                     <Pill className="h-3.5 w-3.5 mr-1.5" />Prescrição
                   </TabsTrigger>
@@ -386,20 +384,19 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                   <Label className="text-xs uppercase tracking-wider text-muted-foreground">Produtos utilizados (lote/qtd)</Label>
                   <Input value={session.products_used || ""} onChange={(e) => setSessionField("products_used", e.target.value)}
                     placeholder="Ex: Botox Allergan 50U — Lote 12345" className="h-11 rounded-xl" data-testid="att-products" />
-                </TabsContent>
 
-                {/* Fotos */}
-                <TabsContent value="fotos" className="mt-5 space-y-6">
-                  <PhotoUploader
-                    label="Antes" testid="photos-before-uploader"
-                    value={session.photos_before || []}
-                    onChange={(urls) => setSessionField("photos_before", urls)}
-                  />
-                  <PhotoUploader
-                    label="Depois" accent="primary" testid="photos-after-uploader"
-                    value={session.photos_after || []}
-                    onChange={(urls) => setSessionField("photos_after", urls)}
-                  />
+                  <div className="pt-4 border-t border-border space-y-4">
+                    <PhotoUploader
+                      label="Antes (procedimento)" testid="photos-before-uploader"
+                      value={session.photos_before || []}
+                      onChange={(urls) => setSessionField("photos_before", urls)}
+                    />
+                    <PhotoUploader
+                      label="Depois (procedimento)" accent="primary" testid="photos-after-uploader"
+                      value={session.photos_after || []}
+                      onChange={(urls) => setSessionField("photos_after", urls)}
+                    />
+                  </div>
                 </TabsContent>
 
                 {/* Prescrição */}

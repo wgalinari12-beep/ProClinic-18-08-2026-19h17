@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, Users, Calendar, FileText, ClipboardList,
   Wallet, Sparkles, Settings, LogOut, Sun, Moon, ChevronsLeft,
-  Stethoscope, ChevronsRight, MessageSquare,
+  Stethoscope, ChevronsRight, MessageSquare, Briefcase, Building2,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -15,9 +15,11 @@ const NAV = [
   { to: "/agenda", icon: Calendar, label: "Agenda" },
   { to: "/prontuario", icon: FileText, label: "Prontuário" },
   { to: "/anamnese", icon: ClipboardList, label: "Anamnese" },
+  { to: "/procedimentos", icon: Briefcase, label: "Procedimentos" },
   { to: "/financeiro", icon: Wallet, label: "Financeiro" },
   { to: "/mensagens", icon: MessageSquare, label: "Mensagens" },
   { to: "/assistente-ia", icon: Sparkles, label: "Assistente IA" },
+  { to: "/minha-clinica", icon: Building2, label: "Minha Clínica" },
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {

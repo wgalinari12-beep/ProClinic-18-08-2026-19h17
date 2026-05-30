@@ -1,0 +1,38 @@
+{
+  "summary": "Phase 2.1 full validation completed. Backend (33 new + 45 regression = 78/78 PASS). Frontend critical flows all PASS: sidebar nav, Procedimentos CRUD, MinhaClinica sections, login text, public routes (/confirmacao/:token and /upload-mobile) render without redirecting to /login, AttendanceDialog now has exactly 4 tabs (Ficha/Evolução/Prescrição/Assinatura) with no isolated Fotos tab, IMC calculation in Ficha Corporal works in real-time (170/70 → 24.22 / 'Peso normal'), conditional field doencas_descricao appears after marking Diabetes chip, photos-before-uploader and photos-after-uploader present inside Evolução tab, Mobile QR buttons present per ficha, and Agenda pre-registration dialog (open-prereg-btn/prereg-name/prereg-phone) opens correctly.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_1_api.py",
+    "/app/backend/tests/test_phase2_api.py",
+    "/app/backend/tests/test_proclinic_api.py",
+    "/app/test_reports/pytest/phase2_1_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 1700 lines — consider splitting per domain (auth, patients, appointments, procedures, clinic, public, mobile-upload, ai, files, messages) into routers for maintainability.",
+    "Public confirmation endpoint POST /public/appointment/{token}/action returns successful payload but the JWT does not enforce single-use; multiple actions (confirm→cancel→reschedule) all succeeded in tests. Consider invalidating token after first non-idempotent action or expiring tighter than appointment date.",
+    "Mobile upload JWT is 20-minute lived but /mobile-upload/files/{token} is publicly readable for that window — fine for QR flow, but log access for audit if PHI photos are eventually involved.",
+    "CORS uses allow_origins=['*'] with allow_credentials=True which is browser-blocked in production. Acceptable for preview but flag for production hardening (set explicit origins)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_1_api.py (NEW)"
+  ],
+  "success_rate": {
+    "backend": "100% (78/78)",
+    "frontend": "100% (27/27 checked items)"
+  },
+  "test_credentials": "admin@proclinic.com / admin123 (seeded, working)",
+  "seed_data_creation": "Created TEST_-prefixed procedures, patients, anamnesis modules during tests; cleaned up via DELETE inside the tests.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 2.1 fully validated. Backend regression file is test_phase2_1_api.py + test_phase2_api.py + test_proclinic_api.py — run with REACT_APP_BACKEND_URL env var set. Public routes /confirmacao/:token and /upload-mobile are correctly registered BEFORE ProtectedRoute in App.js. AttendanceDialog now has only 4 main tabs (Fotos removed). Phase 3 (Evolution API WhatsApp send) is not yet implemented — WhatsApp button currently just generates the public link and opens WhatsApp Web window.",
+  "rca of the issue": "N/A — no issues encountered."
+}

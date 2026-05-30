@@ -75,13 +75,15 @@ export default function Login() {
         </div>
         <div className="relative z-10 max-w-md">
           <h2 className="font-display text-4xl xl:text-5xl font-semibold tracking-tight leading-[1.05] text-balance">
-            Gestão clínica sofisticada.
+            Excelência em cada
             <br />
-            <span className="text-primary">Experiência premium.</span>
+            <span className="text-primary">atendimento.</span>
           </h2>
           <p className="text-sm text-muted-foreground mt-4 leading-relaxed">
-            Plataforma de gestão para clínicas de estética premium. Pacientes, agenda inteligente,
-            prontuário digital, assinatura ICP e IA clínica em um único ambiente.
+            Gestão inteligente para clínicas que buscam excelência. Centralize pacientes,
+            agenda, prontuário eletrônico, atendimento clínico, automações, documentos
+            digitais e inteligência artificial em uma plataforma moderna, segura e
+            desenvolvida para elevar a experiência do profissional e do paciente.
           </p>
         </div>
       </div>

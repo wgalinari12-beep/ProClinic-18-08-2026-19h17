@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { ChevronLeft, ChevronRight, Plus, Play, X, Trash2, Pencil, Phone, MessageSquare } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Play, X, Trash2, Pencil, Phone, MessageSquare, Loader2, Copy, Link as LinkIcon } from "lucide-react";
 import {
   startOfWeek, addDays, format, addWeeks, subWeeks,
   parseISO, isSameDay, setHours, setMinutes, differenceInMinutes,
@@ -115,6 +115,10 @@ export default function Agenda() {
   const [weekStart, setWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 1 }));
   const [appointments, setAppointments] = useState([]);
   const [patients, setPatients] = useState([]);
+  const [procedures, setProcedures] = useState([]);
+  const [showPreReg, setShowPreReg] = useState(false);
+  const [preReg, setPreReg] = useState({ name: "", phone: "" });
+  const [preRegBusy, setPreRegBusy] = useState(false);
 
   // Dialog state — single source of truth (prevents multiple modals)
   const [dialogMode, setDialogMode] = useState(null); // 'new' | 'detail' | null
@@ -137,12 +141,14 @@ export default function Agenda() {
   const load = async () => {
     const start = format(weekStart, "yyyy-MM-dd");
     const end = format(addDays(weekStart, 7), "yyyy-MM-dd");
-    const [apt, pts] = await Promise.all([
+    const [apt, pts, procs] = await Promise.all([
       api.get("/appointments", { params: { start, end: end + "T23:59:59" } }),
       api.get("/patients"),
+      api.get("/procedures", { params: { active_only: true } }),
     ]);
     setAppointments(apt.data);
     setPatients(pts.data);
+    setProcedures(procs.data);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [weekStart]);
 
@@ -213,7 +219,9 @@ export default function Agenda() {
     try {
       const [h, m] = newForm.start_time.split(":").map(Number);
       const startDate = setMinutes(setHours(parseISO(newForm.start_date), h), m);
-      const endDate = new Date(startDate.getTime() + Number(newForm.duration) * 60000);
+      const proc = procedures.find((p) => p.name === newForm.procedure);
+      const dur = proc?.duration_minutes || Number(newForm.duration) || 60;
+      const endDate = new Date(startDate.getTime() + dur * 60000);
       await api.post("/appointments", {
         patient_id: newForm.patient_id,
         procedure: newForm.procedure,
@@ -223,7 +231,7 @@ export default function Agenda() {
         status: newForm.status,
         room: newForm.room,
         notes: newForm.notes,
-        price: Number(newForm.price) || 0,
+        price: Number(newForm.price ?? proc?.price ?? 0),
       });
       toast.success("Agendado");
       closeDialog();
@@ -231,6 +239,29 @@ export default function Agenda() {
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail) || err.message);
     } finally { setBusy(false); }
+  };
+
+  // Pre-register patient inline
+  const savePreReg = async () => {
+    if (!preReg.name.trim() || !preReg.phone.trim()) {
+      toast.error("Nome e telefone são obrigatórios");
+      return;
+    }
+    setPreRegBusy(true);
+    try {
+      const { data } = await api.post("/patients", {
+        name: preReg.name.trim(),
+        phone: preReg.phone.trim(),
+        is_pre_registered: true,
+      });
+      setPatients((p) => [data, ...p]);
+      setNewForm((f) => ({ ...f, patient_id: data.patient_id }));
+      setShowPreReg(false);
+      setPreReg({ name: "", phone: "" });
+      toast.success("Pré-cadastro criado");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || err.message);
+    } finally { setPreRegBusy(false); }
   };
 
   // === Detail actions ===
@@ -271,14 +302,27 @@ export default function Agenda() {
   const sendWhatsappConfirmation = async () => {
     if (!selected) return;
     try {
+      // 1. generate public confirmation link
+      const { data: linkData } = await api.get(`/appointments/${selected.appointment_id}/confirmation-link`);
+      const url = `${window.location.origin}/confirmacao/${linkData.token}`;
+      // 2. enqueue message with the link
       await api.post("/messages", {
         patient_id: selected.patient_id,
         channel: "whatsapp",
         template: "confirmation",
-        body: `Olá ${selected.patient_name}! Confirmamos seu agendamento de ${selected.procedure} em ${format(parseISO(selected.start), "dd/MM 'às' HH:mm", { locale: ptBR })}. Responda CONFIRMAR para confirmar.`,
+        body: `Olá ${selected.patient_name}! Confirme seu agendamento de ${selected.procedure} em ${format(parseISO(selected.start), "dd/MM 'às' HH:mm", { locale: ptBR })}: ${url}`,
       });
-      toast.success("Mensagem enfileirada");
-    } catch { toast.error("Erro"); }
+      // 3. open WhatsApp web with the message pre-filled
+      const phone = (selected.patient_whatsapp || "").replace(/\D/g, "");
+      const text = encodeURIComponent(
+        `Olá ${selected.patient_name}! Confirme seu agendamento: ${url}`
+      );
+      const waUrl = phone
+        ? `https://wa.me/${phone}?text=${text}`
+        : `https://wa.me/?text=${text}`;
+      window.open(waUrl, "_blank", "noopener,noreferrer");
+      toast.success("WhatsApp aberto");
+    } catch { toast.error("Erro ao gerar link"); }
   };
 
   const closeDialog = () => {
@@ -406,21 +450,54 @@ export default function Agenda() {
           {newForm && (
             <form onSubmit={createAppointment} className="grid grid-cols-2 gap-4" data-testid="appointment-form">
               <div className="col-span-2 space-y-1.5">
-                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Paciente *</Label>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">Paciente *</Label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPreReg(true)}
+                    data-testid="open-prereg-btn"
+                    className="text-[11px] text-primary hover:underline font-medium"
+                  >
+                    + Novo paciente
+                  </button>
+                </div>
                 <select required data-testid="form-patient" value={newForm.patient_id}
                   onChange={(e) => setNewForm({ ...newForm, patient_id: e.target.value })}
                   className="w-full h-11 rounded-xl border border-border bg-card px-3 text-sm">
                   <option value="">Selecione...</option>
-                  {patients.map((p) => <option key={p.patient_id} value={p.patient_id}>{p.name}</option>)}
+                  {patients.map((p) => (
+                    <option key={p.patient_id} value={p.patient_id}>
+                      {p.name}{p.is_pre_registered ? " · pré-cadastro" : ""}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div className="col-span-2 space-y-1.5">
                 <Label className="text-xs uppercase tracking-wider text-muted-foreground">Procedimento *</Label>
                 <select required data-testid="form-procedure" value={newForm.procedure}
-                  onChange={(e) => setNewForm({ ...newForm, procedure: e.target.value })}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const p = procedures.find((x) => x.name === v);
+                    setNewForm({
+                      ...newForm,
+                      procedure: v,
+                      duration: p?.duration_minutes || newForm.duration,
+                      price: p?.price ?? newForm.price,
+                    });
+                  }}
                   className="w-full h-11 rounded-xl border border-border bg-card px-3 text-sm">
-                  {PROCEDURES.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {procedures.length === 0 && (
+                    PROCEDURES.map((p) => <option key={p} value={p}>{p}</option>)
+                  )}
+                  {procedures.map((p) => (
+                    <option key={p.procedure_id} value={p.name}>{p.name}</option>
+                  ))}
                 </select>
+                {procedures.length === 0 && (
+                  <p className="text-[11px] text-muted-foreground/80">
+                    💡 Cadastre seus procedimentos em "Procedimentos" para preenchimento automático de valor e duração.
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs uppercase tracking-wider text-muted-foreground">Data</Label>
@@ -519,6 +596,35 @@ export default function Agenda() {
         onOpenChange={(o) => setAttendance({ ...attendance, open: o })}
         onCompleted={load}
       />
+
+      {/* Pre-register patient (inline) */}
+      <Dialog open={showPreReg} onOpenChange={setShowPreReg}>
+        <DialogContent className="rounded-2xl max-w-sm" data-testid="prereg-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl tracking-tight">Novo paciente</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Pré-cadastro rápido. O cadastro completo será solicitado no atendimento.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Nome completo *</Label>
+              <Input data-testid="prereg-name" value={preReg.name}
+                onChange={(e) => setPreReg({ ...preReg, name: e.target.value })} className="h-11 rounded-xl" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Telefone *</Label>
+              <Input data-testid="prereg-phone" value={preReg.phone}
+                onChange={(e) => setPreReg({ ...preReg, phone: e.target.value })} className="h-11 rounded-xl" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={savePreReg} disabled={preRegBusy} className="rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 w-full" data-testid="prereg-save-btn">
+              {preRegBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Salvar e selecionar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

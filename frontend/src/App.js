@@ -19,6 +19,10 @@ import Financeiro from "@/pages/Financeiro";
 import AIAssistant from "@/pages/AIAssistant";
 import Configuracoes from "@/pages/Configuracoes";
 import Mensagens from "@/pages/Mensagens";
+import Procedimentos from "@/pages/Procedimentos";
+import MinhaClinica from "@/pages/MinhaClinica";
+import ConfirmacaoPublica from "@/pages/ConfirmacaoPublica";
+import MobileUpload from "@/pages/MobileUpload";
 
 function AppRouter() {
   const location = useLocation();
@@ -30,6 +34,8 @@ function AppRouter() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
+      <Route path="/confirmacao/:token" element={<ConfirmacaoPublica />} />
+      <Route path="/upload-mobile" element={<MobileUpload />} />
       <Route
         path="/"
         element={
@@ -45,9 +51,11 @@ function AppRouter() {
         <Route path="agenda" element={<Agenda />} />
         <Route path="prontuario" element={<Prontuario />} />
         <Route path="anamnese" element={<Anamnese />} />
+        <Route path="procedimentos" element={<Procedimentos />} />
         <Route path="financeiro" element={<Financeiro />} />
         <Route path="mensagens" element={<Mensagens />} />
         <Route path="assistente-ia" element={<AIAssistant />} />
+        <Route path="minha-clinica" element={<MinhaClinica />} />
         <Route path="configuracoes" element={<Configuracoes />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
