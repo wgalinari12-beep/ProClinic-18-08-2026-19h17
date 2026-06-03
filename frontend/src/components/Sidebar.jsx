@@ -4,6 +4,7 @@ import {
   LayoutDashboard, Users, Calendar, FileText, ClipboardList,
   Wallet, Sparkles, Settings, LogOut, Sun, Moon, ChevronsLeft,
   Stethoscope, ChevronsRight, MessageSquare, Briefcase, Building2,
+  UserCog,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -15,11 +16,12 @@ const NAV = [
   { to: "/agenda", icon: Calendar, label: "Agenda" },
   { to: "/prontuario", icon: FileText, label: "Prontuário" },
   { to: "/anamnese", icon: ClipboardList, label: "Anamnese" },
-  { to: "/procedimentos", icon: Briefcase, label: "Procedimentos" },
-  { to: "/financeiro", icon: Wallet, label: "Financeiro" },
+  { to: "/procedimentos", icon: Briefcase, label: "Procedimentos", adminOnly: true },
+  { to: "/financeiro", icon: Wallet, label: "Financeiro", roles: ["admin", "financeiro"] },
   { to: "/mensagens", icon: MessageSquare, label: "Mensagens" },
   { to: "/assistente-ia", icon: Sparkles, label: "Assistente IA" },
-  { to: "/minha-clinica", icon: Building2, label: "Minha Clínica" },
+  { to: "/equipe", icon: UserCog, label: "Equipe", adminOnly: true },
+  { to: "/minha-clinica", icon: Building2, label: "Minha Clínica", adminOnly: true },
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {
@@ -50,7 +52,12 @@ export default function Sidebar({ collapsed, onToggle }) {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {NAV.map((item) => (
+        {NAV.filter((item) => {
+          if (!user) return true;
+          if (item.adminOnly && user.role !== "admin") return false;
+          if (item.roles && !item.roles.includes(user.role)) return false;
+          return true;
+        }).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

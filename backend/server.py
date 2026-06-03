@@ -63,7 +63,8 @@ class RegisterIn(BaseModel):
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    email: Optional[EmailStr] = None
+    cpf: Optional[str] = None
     password: str
 
 
@@ -97,10 +98,11 @@ class AppointmentIn(BaseModel):
     patient_id: str
     professional_id: Optional[str] = None
     professional_name: Optional[str] = None
+    professional_color: Optional[str] = None
     procedure: str
     start: str  # ISO datetime
     end: str
-    status: str = "agendado"  # agendado, confirmado, concluido, cancelado, encaixe
+    status: str = "agendado"  # agendado, confirmado, concluido, cancelado, encaixe, em_atendimento
     room: Optional[str] = None
     notes: Optional[str] = None
     price: Optional[float] = 0
@@ -287,21 +289,54 @@ async def register(data: RegisterIn, response: Response):
 
 @api_router.post("/auth/login")
 async def login(data: LoginIn, response: Response):
-    email = data.email.lower()
-    user = await db.users.find_one({"email": email})
+    if not data.email and not data.cpf:
+        raise HTTPException(status_code=400, detail="Email ou CPF obrigatório")
+    if data.email:
+        user = await db.users.find_one({"email": data.email.lower()})
+    else:
+        # normalize CPF: only digits
+        cpf_digits = "".join(c for c in (data.cpf or "") if c.isdigit())
+        user = await db.users.find_one({"cpf_digits": cpf_digits})
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
     if not verify_password(data.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
-    token = create_access_token(user["user_id"], email)
+    if not user.get("active", True):
+        raise HTTPException(status_code=403, detail="Usuário desativado")
+    token = create_access_token(user["user_id"], user["email"])
     set_auth_cookie(response, token)
     return {
-        "user_id": user["user_id"], "email": email, "name": user["name"],
+        "user_id": user["user_id"], "email": user["email"], "name": user["name"],
         "role": user["role"], "clinic_id": user["clinic_id"],
         "auth_provider": user.get("auth_provider", "email"),
         "picture": user.get("picture"),
+        "color": user.get("color"),
+        "password_change_required": user.get("password_change_required", False),
         "token": token,
     }
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: Optional[str] = None
+    new_password: str = Field(..., min_length=6)
+
+
+@api_router.post("/auth/change-password")
+async def change_password(data: ChangePasswordIn, user: dict = Depends(get_current_user)):
+    full = await db.users.find_one({"user_id": user["user_id"]})
+    # If not first-access change, require current password
+    if not full.get("password_change_required") and data.current_password:
+        if not verify_password(data.current_password, full["password_hash"]):
+            raise HTTPException(status_code=400, detail="Senha atual incorreta")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "password_hash": hash_password(data.new_password),
+            "password_change_required": False,
+            "password_changed_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return {"ok": True}
 
 
 @api_router.post("/auth/logout")
@@ -320,6 +355,8 @@ async def me(user: dict = Depends(get_current_user)):
         "role": user["role"],
         "clinic_id": user["clinic_id"],
         "picture": user.get("picture"),
+        "color": user.get("color"),
+        "password_change_required": user.get("password_change_required", False),
         "auth_provider": user.get("auth_provider", "email"),
     }
 
@@ -457,17 +494,32 @@ async def delete_patient(patient_id: str, user: dict = Depends(get_current_user)
 # ============================================================
 # Appointments
 # ============================================================
+def role_appointment_filter(user: dict) -> dict:
+    """Filter for appointments: profissional sees only own; admin/recepcao see all."""
+    q = {"clinic_id": user["clinic_id"]}
+    if user.get("role") == "profissional":
+        q["professional_id"] = user["user_id"]
+    return q
+
+
+def role_record_filter(user: dict) -> dict:
+    """Filter for medical records / anamnesis modules. Profissional sees only own."""
+    q = {"clinic_id": user["clinic_id"]}
+    if user.get("role") == "profissional":
+        q["created_by"] = user["user_id"]
+    return q
+
+
 @api_router.get("/appointments")
 async def list_appointments(
     user: dict = Depends(get_current_user),
     start: Optional[str] = None,
     end: Optional[str] = None,
 ):
-    q = {"clinic_id": user["clinic_id"]}
+    q = role_appointment_filter(user)
     if start and end:
         q["start"] = {"$gte": start, "$lte": end}
     docs = await db.appointments.find(q, {"_id": 0}).sort("start", 1).to_list(1000)
-    # attach patient_name
     for d in docs:
         if not d.get("patient_name"):
             p = await db.patients.find_one(
@@ -484,11 +536,33 @@ async def create_appointment(data: AppointmentIn, user: dict = Depends(get_curre
         {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]},
         {"_id": 0, "name": 1},
     )
+    # If no professional_id provided AND user is profissional, assign self
+    professional_id = data.professional_id
+    professional_name = data.professional_name
+    professional_color = data.professional_color
+    if not professional_id and user.get("role") == "profissional":
+        professional_id = user["user_id"]
+        professional_name = user["name"]
+        professional_color = user.get("color")
+    if professional_id and not professional_color:
+        pro = await db.users.find_one(
+            {"user_id": professional_id, "clinic_id": user["clinic_id"]},
+            {"_id": 0, "color": 1, "name": 1},
+        )
+        if pro:
+            professional_color = pro.get("color")
+            if not professional_name:
+                professional_name = pro.get("name")
     doc = data.model_dump()
     doc.update({
         "appointment_id": appointment_id,
         "clinic_id": user["clinic_id"],
         "patient_name": p["name"] if p else "Paciente",
+        "professional_id": professional_id,
+        "professional_name": professional_name,
+        "professional_color": professional_color,
+        "created_by": user["user_id"],
+        "created_by_name": user["name"],
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     await db.appointments.insert_one(doc)
@@ -528,7 +602,7 @@ async def delete_appointment(appointment_id: str, user: dict = Depends(get_curre
 # ============================================================
 @api_router.get("/medical-records")
 async def list_records(patient_id: Optional[str] = None, user: dict = Depends(get_current_user)):
-    q = {"clinic_id": user["clinic_id"]}
+    q = role_record_filter(user)
     if patient_id:
         q["patient_id"] = patient_id
     docs = await db.medical_records.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
@@ -546,6 +620,8 @@ async def create_record(data: MedicalRecordIn, user: dict = Depends(get_current_
         "record_id": record_id,
         "clinic_id": user["clinic_id"],
         "patient_name": p["name"] if p else "Paciente",
+        "created_by": user["user_id"],
+        "created_by_name": user["name"],
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     await db.medical_records.insert_one(doc)
@@ -823,17 +899,64 @@ async def seed_data():
             {"$set": {"password_hash": hash_password(admin_password)}},
         )
 
-    # Demo professional
+    # Demo professionals
     prof = await db.users.find_one({"email": "dra.bella@proclinic.com"})
     if not prof:
+        prof_id = f"user_{uuid.uuid4().hex[:12]}"
         await db.users.insert_one({
-            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "user_id": prof_id,
             "email": "dra.bella@proclinic.com",
             "name": "Dra. Bella Castro",
+            "cpf": "111.222.333-44",
+            "cpf_digits": "11122233344",
             "password_hash": hash_password("bella123"),
             "role": "profissional",
             "clinic_id": clinic_id,
             "auth_provider": "email",
+            "council": "CRM",
+            "council_number": "12345",
+            "specialty": "Dermatologia",
+            "color": "#B76E79",
+            "active": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        prof = await db.users.find_one({"email": "dra.bella@proclinic.com"})
+
+    prof2 = await db.users.find_one({"email": "dra.lais@proclinic.com"})
+    if not prof2:
+        await db.users.insert_one({
+            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "email": "dra.lais@proclinic.com",
+            "name": "Dra. Laís Monteiro",
+            "cpf": "222.333.444-55",
+            "cpf_digits": "22233344455",
+            "password_hash": hash_password("lais123"),
+            "role": "profissional",
+            "clinic_id": clinic_id,
+            "auth_provider": "email",
+            "council": "CRBM",
+            "council_number": "67890",
+            "specialty": "Biomedicina Estética",
+            "color": "#7F9CF5",
+            "active": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    # Demo receptionist
+    rec = await db.users.find_one({"email": "ana.recep@proclinic.com"})
+    if not rec:
+        await db.users.insert_one({
+            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "email": "ana.recep@proclinic.com",
+            "name": "Ana Recepção",
+            "cpf": "333.444.555-66",
+            "cpf_digits": "33344455566",
+            "password_hash": hash_password("ana123"),
+            "role": "recepcao",
+            "clinic_id": clinic_id,
+            "auth_provider": "email",
+            "color": "#A0AEC0",
+            "active": True,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -865,6 +988,7 @@ async def seed_data():
 
         # Demo appointments for today + week
         patients_list = await db.patients.find({"clinic_id": clinic_id}, {"_id": 0}).to_list(20)
+        profs = await db.users.find({"clinic_id": clinic_id, "role": "profissional"}, {"_id": 0}).to_list(10)
         today = datetime.now(timezone.utc).replace(hour=9, minute=0, second=0, microsecond=0)
         procedures = ["Botox", "Preenchimento Labial", "Limpeza de Pele", "Microagulhamento",
                       "Bioestimulador", "Ultraformer", "Harmonização Facial", "Laser Facial"]
@@ -873,12 +997,15 @@ async def seed_data():
             for day_offset in range(0, 5):
                 start = today + timedelta(days=day_offset, hours=i*2)
                 end = start + timedelta(hours=1, minutes=30)
+                pr = profs[(i + day_offset) % len(profs)] if profs else None
                 await db.appointments.insert_one({
                     "appointment_id": f"apt_{uuid.uuid4().hex[:12]}",
                     "clinic_id": clinic_id,
                     "patient_id": pat["patient_id"],
                     "patient_name": pat["name"],
-                    "professional_name": "Dra. Bella Castro",
+                    "professional_id": pr.get("user_id") if pr else None,
+                    "professional_name": pr.get("name") if pr else "Dra. Bella Castro",
+                    "professional_color": pr.get("color") if pr else "#B76E79",
                     "procedure": procedures[(i + day_offset) % len(procedures)],
                     "start": start.isoformat(),
                     "end": end.isoformat(),
@@ -914,6 +1041,30 @@ async def seed_data():
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
             await db.financial_entries.insert_one(entry)
+
+    # Migration: ensure seeded professionals have all required fields
+    seed_cpfs = {
+        "dra.bella@proclinic.com": ("111.222.333-44", "Dermatologia", "CRM", "12345", "#B76E79"),
+        "dra.lais@proclinic.com": ("222.333.444-55", "Biomedicina Estética", "CRBM", "67890", "#7F9CF5"),
+        "ana.recep@proclinic.com": ("333.444.555-66", None, None, None, "#A0AEC0"),
+    }
+    async for u in db.users.find({"clinic_id": clinic_id}):
+        updates = {}
+        seed = seed_cpfs.get(u["email"])
+        if seed and not u.get("cpf"):
+            updates["cpf"] = seed[0]
+            updates["specialty"] = seed[1]
+            updates["council"] = seed[2]
+            updates["council_number"] = seed[3]
+            updates["color"] = seed[4]
+        if u.get("cpf") and not u.get("cpf_digits"):
+            updates["cpf_digits"] = "".join(c for c in u["cpf"] if c.isdigit())
+        if not u.get("color") and u.get("role") == "profissional":
+            updates["color"] = "#B76E79"
+        if "active" not in u:
+            updates["active"] = True
+        if updates:
+            await db.users.update_one({"user_id": u["user_id"]}, {"$set": updates})
 
     logger.info("Seed complete")
 
@@ -984,6 +1135,17 @@ _MIME_BY_EXT = {
 }
 
 
+def make_file_signature(file_id: str, clinic_id: str) -> str:
+    """Long-lived signature for serving image files without runtime user auth."""
+    payload = {
+        "scope": "file_sig",
+        "fid": file_id,
+        "clinic": clinic_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=365),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
 _ALLOWED_UPLOAD_MIMES = {
     "image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf",
 }
@@ -1006,6 +1168,7 @@ async def upload_file(
     path = f"{APP_NAME}/{user['clinic_id']}/{user['user_id']}/{uuid.uuid4()}.{ext}"
     result = put_object(path, raw, content_type)
     file_id = f"file_{uuid.uuid4().hex[:12]}"
+    sig = make_file_signature(file_id, user["clinic_id"])
     doc = {
         "file_id": file_id,
         "storage_path": result["path"],
@@ -1014,22 +1177,44 @@ async def upload_file(
         "size": result.get("size", len(raw)),
         "clinic_id": user["clinic_id"],
         "uploaded_by": user["user_id"],
+        "uploaded_by_name": user.get("name"),
         "is_deleted": False,
+        "signature": sig,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.files.insert_one(doc)
     return {
         "file_id": file_id,
-        "url": f"/api/files/{result['path']}",
+        "url": f"/api/files/{result['path']}?sig={sig}",
         "path": result["path"],
+        "signature": sig,
         "content_type": content_type,
         "size": doc["size"],
+        "uploaded_at": doc["created_at"],
+        "uploaded_by_name": user.get("name"),
     }
 
 
 @api_router.get("/files/{path:path}")
-async def serve_file(path: str, request: Request, auth: Optional[str] = Query(None)):
-    # Allow auth via query param OR cookie OR header
+async def serve_file(path: str, request: Request, sig: Optional[str] = Query(None), auth: Optional[str] = Query(None)):
+    """Serve image file. Auth via signed URL (preferred, long-lived) OR user auth fallback."""
+    # 1. Try signed URL (no DB lookup yet, validate token only)
+    if sig:
+        try:
+            p = jwt.decode(sig, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            if p.get("scope") == "file_sig":
+                rec = await db.files.find_one(
+                    {"storage_path": path, "is_deleted": False, "clinic_id": p["clinic"]},
+                    {"_id": 0},
+                )
+                if rec:
+                    data, ct = get_object(path)
+                    return Response(content=data, media_type=rec.get("content_type", ct))
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Link de imagem expirado")
+        except jwt.InvalidTokenError:
+            pass
+    # 2. Fallback to user auth
     if auth:
         try:
             payload = jwt.decode(auth, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -1062,6 +1247,14 @@ class AnamnesisModuleIn(BaseModel):
     signed: bool = False
 
 
+@api_router.get("/anamnesis-modules")
+async def list_anamnesis_modules(patient_id: str, user: dict = Depends(get_current_user)):
+    q = role_record_filter(user)
+    q["patient_id"] = patient_id
+    docs = await db.anamnesis_modules.find(q, {"_id": 0}).to_list(20)
+    return docs
+
+
 @api_router.post("/anamnesis-modules")
 async def save_anamnesis_module(data: AnamnesisModuleIn, user: dict = Depends(get_current_user)):
     p = await db.patients.find_one(
@@ -1070,15 +1263,18 @@ async def save_anamnesis_module(data: AnamnesisModuleIn, user: dict = Depends(ge
     )
     if not p:
         raise HTTPException(status_code=404, detail="Paciente não encontrado")
-    # upsert by patient+module (latest version replaces draft)
-    existing = await db.anamnesis_modules.find_one(
-        {"patient_id": data.patient_id, "clinic_id": user["clinic_id"], "module": data.module},
-        {"_id": 0},
-    )
+    # Each profissional has own module; admin shares per clinic
+    q = {"patient_id": data.patient_id, "clinic_id": user["clinic_id"], "module": data.module}
+    if user.get("role") == "profissional":
+        q["created_by"] = user["user_id"]
+    existing = await db.anamnesis_modules.find_one(q, {"_id": 0})
     doc = data.model_dump()
     doc.update({
         "clinic_id": user["clinic_id"],
         "patient_name": p["name"],
+        "created_by": existing.get("created_by") if existing else user["user_id"],
+        "created_by_name": existing.get("created_by_name") if existing else user["name"],
+        "updated_by": user["user_id"],
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
     if existing:
@@ -1093,14 +1289,6 @@ async def save_anamnesis_module(data: AnamnesisModuleIn, user: dict = Depends(ge
         await db.anamnesis_modules.insert_one(doc)
     doc.pop("_id", None)
     return doc
-
-
-@api_router.get("/anamnesis-modules")
-async def list_anamnesis_modules(patient_id: str, user: dict = Depends(get_current_user)):
-    docs = await db.anamnesis_modules.find(
-        {"patient_id": patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0},
-    ).to_list(20)
-    return docs
 
 
 # ============================================================
@@ -1634,8 +1822,10 @@ async def mobile_upload_upload(
         raise HTTPException(status_code=400, detail=f"Tipo não permitido: {content_type}")
     path = f"{APP_NAME}/{clinic_id}/{user_id}/{uuid.uuid4()}.{ext}"
     result = put_object(path, raw, content_type)
+    file_id = f"file_{uuid.uuid4().hex[:12]}"
+    sig = make_file_signature(file_id, clinic_id)
     doc = {
-        "file_id": f"file_{uuid.uuid4().hex[:12]}",
+        "file_id": file_id,
         "storage_path": result["path"],
         "original_filename": file.filename,
         "content_type": content_type,
@@ -1646,16 +1836,18 @@ async def mobile_upload_upload(
         "context_type": p["ctx_type"],
         "context_id": p["ctx_id"],
         "from_mobile": True,
+        "signature": sig,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.files.insert_one(doc)
+    public_url = f"/api/files/{result['path']}?sig={sig}"
     # If anamnesis context, append URL to module.photos
     if p["ctx_type"] == "anamnesis":
         await db.anamnesis_modules.update_one(
             {"module_id": p["ctx_id"]},
-            {"$push": {"photos": f"/api/files/{result['path']}"}},
+            {"$push": {"photos": public_url}},
         )
-    return {"ok": True, "url": f"/api/files/{result['path']}"}
+    return {"ok": True, "url": public_url}
 
 
 @api_router.get("/mobile-upload/files/{token}")
@@ -1669,9 +1861,164 @@ async def mobile_upload_files(token: str):
         raise HTTPException(status_code=401, detail="Token inválido")
     docs = await db.files.find(
         {"context_type": p["ctx_type"], "context_id": p["ctx_id"], "is_deleted": False},
-        {"_id": 0, "storage_path": 1, "created_at": 1},
+        {"_id": 0, "storage_path": 1, "signature": 1, "created_at": 1},
     ).sort("created_at", -1).to_list(50)
-    return [{"url": f"/api/files/{d['storage_path']}", "created_at": d["created_at"]} for d in docs]
+    return [{
+        "url": f"/api/files/{d['storage_path']}?sig={d.get('signature', '')}",
+        "created_at": d["created_at"],
+    } for d in docs]
+
+
+# ============================================================
+# Users management (admin-only CRUD for staff: profissionais, recepcionistas)
+# ============================================================
+def require_admin(user: dict):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Apenas administradores")
+
+
+class StaffUserIn(BaseModel):
+    name: str = Field(..., min_length=1)
+    email: EmailStr
+    cpf: Optional[str] = None
+    role: Literal["profissional", "recepcao", "financeiro", "marketing", "admin"]
+    phone: Optional[str] = None
+    birth_date: Optional[str] = None
+    council: Optional[str] = None
+    council_number: Optional[str] = None
+    specialty: Optional[str] = None
+    subspecialty: Optional[str] = None
+    color: Optional[str] = "#B76E79"
+    picture: Optional[str] = None
+    signature_url: Optional[str] = None
+    active: bool = True
+    initial_password: Optional[str] = None  # required on create only
+
+
+@api_router.get("/users")
+async def list_users(user: dict = Depends(get_current_user), role: Optional[str] = None):
+    require_admin(user)
+    q = {"clinic_id": user["clinic_id"]}
+    if role:
+        q["role"] = role
+    docs = await db.users.find(q, {"_id": 0, "password_hash": 0, "session_token": 0}).sort("created_at", -1).to_list(500)
+    return docs
+
+
+@api_router.get("/users/professionals-public")
+async def list_professionals_public(user: dict = Depends(get_current_user)):
+    """All users can see basic info of professionals (for dropdowns)."""
+    docs = await db.users.find(
+        {"clinic_id": user["clinic_id"], "role": "profissional", "active": True},
+        {"_id": 0, "user_id": 1, "name": 1, "color": 1, "specialty": 1, "picture": 1},
+    ).sort("name", 1).to_list(200)
+    return docs
+
+
+@api_router.post("/users")
+async def create_user(data: StaffUserIn, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    email = data.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Email já cadastrado")
+    cpf_digits = "".join(c for c in (data.cpf or "") if c.isdigit()) if data.cpf else None
+    if cpf_digits and await db.users.find_one({"cpf_digits": cpf_digits}):
+        raise HTTPException(status_code=400, detail="CPF já cadastrado")
+    if not data.initial_password or len(data.initial_password) < 6:
+        raise HTTPException(status_code=400, detail="Senha inicial obrigatória (mín. 6 caracteres)")
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "user_id": user_id,
+        "email": email,
+        "name": data.name,
+        "cpf": data.cpf,
+        "cpf_digits": cpf_digits,
+        "phone": data.phone,
+        "birth_date": data.birth_date,
+        "role": data.role,
+        "council": data.council,
+        "council_number": data.council_number,
+        "specialty": data.specialty,
+        "subspecialty": data.subspecialty,
+        "color": data.color or "#B76E79",
+        "picture": data.picture,
+        "signature_url": data.signature_url,
+        "active": data.active,
+        "clinic_id": user["clinic_id"],
+        "auth_provider": "email",
+        "password_hash": hash_password(data.initial_password),
+        "password_change_required": True,
+        "created_by": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.insert_one(doc)
+    doc.pop("password_hash", None)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/users/{user_id}")
+async def update_user(user_id: str, data: StaffUserIn, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    target = await db.users.find_one({"user_id": user_id, "clinic_id": user["clinic_id"]})
+    if not target:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    cpf_digits = "".join(c for c in (data.cpf or "") if c.isdigit()) if data.cpf else target.get("cpf_digits")
+    update = {
+        "name": data.name,
+        "cpf": data.cpf,
+        "cpf_digits": cpf_digits,
+        "phone": data.phone,
+        "birth_date": data.birth_date,
+        "role": data.role,
+        "council": data.council,
+        "council_number": data.council_number,
+        "specialty": data.specialty,
+        "subspecialty": data.subspecialty,
+        "color": data.color or target.get("color", "#B76E79"),
+        "active": data.active,
+        "picture": data.picture,
+        "signature_url": data.signature_url,
+        "updated_by": user["user_id"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if data.initial_password and len(data.initial_password) >= 6:
+        update["password_hash"] = hash_password(data.initial_password)
+        update["password_change_required"] = True
+    await db.users.update_one({"user_id": user_id}, {"$set": update})
+    doc = await db.users.find_one(
+        {"user_id": user_id}, {"_id": 0, "password_hash": 0, "session_token": 0}
+    )
+    return doc
+
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    if user_id == user["user_id"]:
+        raise HTTPException(status_code=400, detail="Não é possível remover a si mesmo")
+    # soft-delete by deactivating to preserve audit trail
+    await db.users.update_one(
+        {"user_id": user_id, "clinic_id": user["clinic_id"]},
+        {"$set": {"active": False, "deactivated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+@api_router.post("/users/{user_id}/reset-password")
+async def reset_password(user_id: str, payload: Dict[str, str], user: dict = Depends(get_current_user)):
+    require_admin(user)
+    new_pwd = payload.get("new_password") or ""
+    if len(new_pwd) < 6:
+        raise HTTPException(status_code=400, detail="Senha mínimo 6 caracteres")
+    await db.users.update_one(
+        {"user_id": user_id, "clinic_id": user["clinic_id"]},
+        {"$set": {
+            "password_hash": hash_password(new_pwd),
+            "password_change_required": True,
+        }},
+    )
+    return {"ok": True}
 
 
 # ============================================================

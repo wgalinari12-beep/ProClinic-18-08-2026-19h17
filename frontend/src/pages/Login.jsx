@@ -18,7 +18,9 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const [mode, setMode] = useState("login"); // login | register
+  const [authMode, setAuthMode] = useState("email"); // email | cpf
   const [email, setEmail] = useState("admin@proclinic.com");
+  const [cpf, setCpf] = useState("");
   const [password, setPassword] = useState("admin123");
   const [name, setName] = useState("");
   const [role, setRole] = useState("recepcao");
@@ -32,7 +34,7 @@ export default function Login() {
     e.preventDefault();
     setBusy(true);
     try {
-      if (mode === "login") await login(email, password);
+      if (mode === "login") await login({ email: authMode === "email" ? email : null, cpf: authMode === "cpf" ? cpf : null, password });
       else await register({ email, password, name, role });
       toast.success(mode === "login" ? "Bem-vindo(a) de volta" : "Conta criada");
       navigate("/dashboard", { replace: true });
@@ -145,15 +147,40 @@ export default function Login() {
               </>
             )}
             <div className="space-y-1.5">
-              <Label htmlFor="email" className="text-xs uppercase tracking-wider text-muted-foreground">Email</Label>
+              {mode === "login" && (
+                <div className="flex items-center gap-2 mb-2">
+                  <button type="button" data-testid="toggle-auth-email"
+                    onClick={() => setAuthMode("email")}
+                    className={`text-[11px] px-3 py-1 rounded-full transition-colors ${authMode === "email" ? "bg-primary text-primary-foreground" : "border border-border text-muted-foreground"}`}>
+                    Email
+                  </button>
+                  <button type="button" data-testid="toggle-auth-cpf"
+                    onClick={() => setAuthMode("cpf")}
+                    className={`text-[11px] px-3 py-1 rounded-full transition-colors ${authMode === "cpf" ? "bg-primary text-primary-foreground" : "border border-border text-muted-foreground"}`}>
+                    CPF
+                  </button>
+                </div>
+              )}
+              <Label htmlFor="email" className="text-xs uppercase tracking-wider text-muted-foreground">
+                {mode === "login" && authMode === "cpf" ? "CPF" : "Email"}
+              </Label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" strokeWidth={1.5} />
-                <Input
-                  id="email" type="email" data-testid="login-email"
-                  value={email} onChange={(e) => setEmail(e.target.value)}
-                  required placeholder="voce@clinica.com"
-                  className="pl-9 h-11 rounded-xl border-border bg-card"
-                />
+                {mode === "login" && authMode === "cpf" ? (
+                  <Input
+                    id="cpf" type="text" data-testid="login-cpf"
+                    value={cpf} onChange={(e) => setCpf(e.target.value)}
+                    required placeholder="000.000.000-00"
+                    className="pl-9 h-11 rounded-xl border-border bg-card"
+                  />
+                ) : (
+                  <Input
+                    id="email" type="email" data-testid="login-email"
+                    value={email} onChange={(e) => setEmail(e.target.value)}
+                    required placeholder="voce@clinica.com"
+                    className="pl-9 h-11 rounded-xl border-border bg-card"
+                  />
+                )}
               </div>
             </div>
             <div className="space-y-1.5">

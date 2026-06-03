@@ -23,6 +23,8 @@ import Procedimentos from "@/pages/Procedimentos";
 import MinhaClinica from "@/pages/MinhaClinica";
 import ConfirmacaoPublica from "@/pages/ConfirmacaoPublica";
 import MobileUpload from "@/pages/MobileUpload";
+import Equipe from "@/pages/Equipe";
+import ChangePasswordModal from "@/components/ChangePasswordModal";
 
 function AppRouter() {
   const location = useLocation();
@@ -56,6 +58,7 @@ function AppRouter() {
         <Route path="mensagens" element={<Mensagens />} />
         <Route path="assistente-ia" element={<AIAssistant />} />
         <Route path="minha-clinica" element={<MinhaClinica />} />
+        <Route path="equipe" element={<Equipe />} />
         <Route path="configuracoes" element={<Configuracoes />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
@@ -69,6 +72,7 @@ export default function App() {
       <BrowserRouter>
         <AuthProvider>
           <AppRouter />
+          <ChangePasswordModal />
           <Toaster position="top-right" />
         </AuthProvider>
       </BrowserRouter>
