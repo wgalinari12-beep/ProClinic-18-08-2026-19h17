@@ -5,39 +5,62 @@ import PageHeader from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   ArrowLeft, Phone, Mail, MapPin, AlertTriangle, CalendarDays,
-  FileText, ClipboardList, Image as ImageIcon, Cake,
+  FileText, ClipboardList, Image as ImageIcon, Cake, Wallet,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import BudgetEditor from "@/components/BudgetEditor";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function PatientDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [patient, setPatient] = useState(null);
   const [appointments, setAppointments] = useState([]);
   const [records, setRecords] = useState([]);
   const [anamnesis, setAnamnesis] = useState([]);
+  const [budgets, setBudgets] = useState([]);
+  const [budgetOpen, setBudgetOpen] = useState(false);
+  const [budgetId, setBudgetId] = useState(null);
+
+  const canClinical = user?.role !== "recepcao";
 
   useEffect(() => {
     (async () => {
       try {
-        const [p, apt, rec, ana] = await Promise.all([
+        const calls = [
           api.get(`/patients/${id}`),
           api.get(`/appointments`),
-          api.get(`/medical-records`, { params: { patient_id: id } }),
-          api.get(`/anamnesis`, { params: { patient_id: id } }),
-        ]);
-        setPatient(p.data);
-        setAppointments(apt.data.filter((a) => a.patient_id === id));
-        setRecords(rec.data);
-        setAnamnesis(ana.data);
+        ];
+        if (canClinical) {
+          calls.push(api.get(`/medical-records`, { params: { patient_id: id } }));
+          calls.push(api.get(`/anamnesis`, { params: { patient_id: id } }));
+          calls.push(api.get(`/budgets`, { params: { patient_id: id } }));
+        }
+        const res = await Promise.all(calls);
+        setPatient(res[0].data);
+        setAppointments(res[1].data.filter((a) => a.patient_id === id));
+        if (canClinical) {
+          setRecords(res[2].data);
+          setAnamnesis(res[3].data);
+          setBudgets(res[4].data);
+        }
       } catch (e) {
         console.error(e);
       }
     })();
-  }, [id]);
+  }, [id, canClinical]);
+
+  const reloadBudgets = async () => {
+    try {
+      const { data } = await api.get(`/budgets`, { params: { patient_id: id } });
+      setBudgets(data);
+    } catch { /* ignore */ }
+  };
 
   if (!patient) {
     return <div className="p-12 text-muted-foreground">Carregando...</div>;
@@ -49,9 +72,16 @@ export default function PatientDetail() {
         title={patient.name}
         subtitle={patient.cpf ? `CPF · ${patient.cpf}` : "Perfil do paciente"}
         actions={
-          <Button variant="ghost" size="sm" onClick={() => navigate("/pacientes")} data-testid="back-to-patients">
-            <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
-          </Button>
+          <div className="flex items-center gap-2">
+            {canClinical && (
+              <Button variant="outline" size="sm" className="rounded-xl" onClick={() => { setBudgetId(null); setBudgetOpen(true); }} data-testid="new-budget-btn">
+                <Wallet className="h-3.5 w-3.5 mr-1.5" /> Novo orçamento
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => navigate("/pacientes")} data-testid="back-to-patients">
+              <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
+            </Button>
+          </div>
         }
       />
 
@@ -115,12 +145,21 @@ export default function PatientDetail() {
               <TabsTrigger value="timeline" data-testid="tab-timeline" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                 <CalendarDays className="h-4 w-4 mr-1.5" />Timeline
               </TabsTrigger>
-              <TabsTrigger value="prontuario" data-testid="tab-prontuario" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
-                <FileText className="h-4 w-4 mr-1.5" />Prontuário
-              </TabsTrigger>
-              <TabsTrigger value="anamnese" data-testid="tab-anamnese" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
-                <ClipboardList className="h-4 w-4 mr-1.5" />Anamnese
-              </TabsTrigger>
+              {canClinical && (
+                <>
+                  <TabsTrigger value="prontuario" data-testid="tab-prontuario" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
+                    <FileText className="h-4 w-4 mr-1.5" />Prontuário
+                  </TabsTrigger>
+                  <TabsTrigger value="anamnese" data-testid="tab-anamnese" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
+                    <ClipboardList className="h-4 w-4 mr-1.5" />Anamnese
+                  </TabsTrigger>
+                </>
+              )}
+              {canClinical && (
+                <TabsTrigger value="orcamentos" data-testid="tab-orcamentos" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
+                  <Wallet className="h-4 w-4 mr-1.5" />Orçamentos
+                </TabsTrigger>
+              )}
             </TabsList>
 
             <TabsContent value="timeline" className="mt-5">
@@ -143,7 +182,7 @@ export default function PatientDetail() {
             </TabsContent>
 
             <TabsContent value="prontuario" className="mt-5">
-              {records.length === 0 ? (
+              {!canClinical ? null : records.length === 0 ? (
                 <p className="text-sm text-muted-foreground py-8 text-center">Nenhum registro clínico.</p>
               ) : (
                 <div className="space-y-4">
@@ -172,7 +211,7 @@ export default function PatientDetail() {
             </TabsContent>
 
             <TabsContent value="anamnese" className="mt-5">
-              {anamnesis.length === 0 ? (
+              {!canClinical ? null : anamnesis.length === 0 ? (
                 <p className="text-sm text-muted-foreground py-8 text-center">Sem anamnese.</p>
               ) : (
                 <div className="space-y-3">
@@ -198,9 +237,50 @@ export default function PatientDetail() {
                 </div>
               )}
             </TabsContent>
+
+            {canClinical && (
+              <TabsContent value="orcamentos" className="mt-5" data-testid="orcamentos-list">
+                {budgets.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-8 text-center">Nenhum orçamento.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {budgets.map((b) => (
+                      <button key={b.budget_id}
+                        onClick={() => { setBudgetId(b.budget_id); setBudgetOpen(true); }}
+                        data-testid={`budget-row-${b.budget_id}`}
+                        className="w-full text-left border border-border rounded-xl p-4 hover:bg-muted/40 transition-colors">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-medium">{(Number(b.total) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {format(parseISO(b.created_at), "dd/MM/yyyy", { locale: ptBR })} · {b.items?.length || 0} itens · {b.payment_method || "—"}
+                            </div>
+                          </div>
+                          <Badge variant="outline" className="text-[10px] uppercase tracking-wider">{b.status}</Badge>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </TabsContent>
+            )}
           </Tabs>
         </div>
       </div>
+
+      <Dialog open={budgetOpen} onOpenChange={(o) => { setBudgetOpen(o); if (!o) reloadBudgets(); }}>
+        <DialogContent className="max-w-3xl rounded-2xl" data-testid="budget-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl tracking-tight">
+              {budgetId ? "Editar orçamento" : "Novo orçamento"}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Paciente: {patient.name}
+            </DialogDescription>
+          </DialogHeader>
+          <BudgetEditor patientId={id} budgetId={budgetId} onSaved={(b) => setBudgetId(b.budget_id)} />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

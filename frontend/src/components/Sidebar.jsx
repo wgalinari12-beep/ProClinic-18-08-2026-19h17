@@ -14,12 +14,12 @@ const NAV = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel" },
   { to: "/pacientes", icon: Users, label: "Pacientes" },
   { to: "/agenda", icon: Calendar, label: "Agenda" },
-  { to: "/prontuario", icon: FileText, label: "Prontuário" },
-  { to: "/anamnese", icon: ClipboardList, label: "Anamnese" },
+  { to: "/prontuario", icon: FileText, label: "Prontuário", hideRoles: ["recepcao"] },
+  { to: "/anamnese", icon: ClipboardList, label: "Anamnese", hideRoles: ["recepcao"] },
   { to: "/procedimentos", icon: Briefcase, label: "Procedimentos", adminOnly: true },
-  { to: "/financeiro", icon: Wallet, label: "Financeiro", roles: ["admin", "financeiro"] },
+  { to: "/financeiro", icon: Wallet, label: "Financeiro", roles: ["admin", "financeiro", "recepcao"] },
   { to: "/mensagens", icon: MessageSquare, label: "Mensagens" },
-  { to: "/assistente-ia", icon: Sparkles, label: "Assistente IA" },
+  { to: "/assistente-ia", icon: Sparkles, label: "Assistente IA", hideRoles: ["recepcao"] },
   { to: "/equipe", icon: UserCog, label: "Equipe", adminOnly: true },
   { to: "/minha-clinica", icon: Building2, label: "Minha Clínica", adminOnly: true },
 ];
@@ -56,6 +56,7 @@ export default function Sidebar({ collapsed, onToggle }) {
           if (!user) return true;
           if (item.adminOnly && user.role !== "admin") return false;
           if (item.roles && !item.roles.includes(user.role)) return false;
+          if (item.hideRoles && item.hideRoles.includes(user.role)) return false;
           return true;
         }).map((item) => (
           <NavLink

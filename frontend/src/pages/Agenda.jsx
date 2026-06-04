@@ -90,7 +90,7 @@ function ApptBlock({ appointment, onClick, dragging }) {
 }
 
 // ============================================================
-// Droppable cell
+// Droppable cell — week view (day + hour)
 // ============================================================
 function DayHourCell({ day, hour, children, onEmptyClick }) {
   const dropId = `${format(day, "yyyy-MM-dd")}_${hour}`;
@@ -103,6 +103,28 @@ function DayHourCell({ day, hour, children, onEmptyClick }) {
       ref={setNodeRef}
       data-testid={`agenda-cell-${dropId}`}
       onClick={() => onEmptyClick(day, hour)}
+      className={`border-t border-l border-border relative cursor-pointer transition-colors ${isOver ? "bg-primary/5" : ""}`}
+      style={{ height: SLOT_HEIGHT }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ============================================================
+// Droppable cell — by-professional view (pro + hour on a fixed day)
+// ============================================================
+function ProHourCell({ day, hour, pro, children, onEmptyClick }) {
+  const dropId = `pro_${pro.user_id}_${format(day, "yyyy-MM-dd")}_${hour}`;
+  const { setNodeRef, isOver } = useDroppable({
+    id: dropId,
+    data: { day: format(day, "yyyy-MM-dd"), hour, professional_id: pro.user_id },
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      data-testid={`agenda-procell-${pro.user_id}-${hour}`}
+      onClick={() => onEmptyClick(day, hour, pro)}
       className={`border-t border-l border-border relative cursor-pointer transition-colors ${isOver ? "bg-primary/5" : ""}`}
       style={{ height: SLOT_HEIGHT }}
     >
@@ -131,6 +153,7 @@ export default function Agenda() {
 
   const [newForm, setNewForm] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [viewMode, setViewMode] = useState("all"); // 'all' | 'by-professional'
 
   // dnd-kit
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
@@ -159,11 +182,11 @@ export default function Agenda() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [weekStart]);
 
   // === Cell click → open new appointment ===
-  const onEmptyClick = (day, hour) => {
+  const onEmptyClick = (day, hour, forcedPro = null) => {
     if (dragging) return;
     if (dialogMode) return; // prevent multiple modals
     const dateStr = format(day, "yyyy-MM-dd");
-    const defaultPro = professionals[0];
+    const defaultPro = forcedPro || professionals[0];
     setNewForm({
       patient_id: "", procedure: "Botox", start_date: dateStr,
       start_time: `${String(hour).padStart(2, "0")}:00`, duration: 60,
@@ -194,7 +217,7 @@ export default function Agenda() {
     if (!over) return;
     const apt = active.data.current?.appointment;
     if (!apt) return;
-    const { day, hour } = over.data.current || {};
+    const { day, hour, professional_id: dropProId } = over.data.current || {};
     if (!day || hour == null) return;
     // Compute new start/end preserving duration
     const oldStart = parseISO(apt.start);
@@ -202,13 +225,26 @@ export default function Agenda() {
     const minutes = differenceInMinutes(oldEnd, oldStart);
     const newStart = setMinutes(setHours(parseISO(day), hour), oldStart.getMinutes());
     const newEnd = addMinutes(newStart, minutes);
-    if (isSameDay(newStart, oldStart) && newStart.getHours() === oldStart.getHours()) return;
+    // Determine new professional (may change in by-pro view)
+    let newProId = apt.professional_id;
+    let newProName = apt.professional_name;
+    let newProColor = apt.professional_color;
+    if (dropProId && dropProId !== apt.professional_id) {
+      const np = professionals.find((p) => p.user_id === dropProId);
+      if (np) {
+        newProId = np.user_id;
+        newProName = np.name;
+        newProColor = np.color;
+      }
+    }
+    const sameSlot = isSameDay(newStart, oldStart) && newStart.getHours() === oldStart.getHours();
+    if (sameSlot && newProId === apt.professional_id) return;
     try {
       await api.put(`/appointments/${apt.appointment_id}`, {
         patient_id: apt.patient_id,
-        professional_id: apt.professional_id,
-        professional_name: apt.professional_name,
-        professional_color: apt.professional_color,
+        professional_id: newProId,
+        professional_name: newProName,
+        professional_color: newProColor,
         procedure: apt.procedure,
         start: newStart.toISOString(),
         end: newEnd.toISOString(),
@@ -358,6 +394,20 @@ export default function Agenda() {
     return m;
   }, [appointments]);
 
+  // For "by-professional" view: index by professional_id + hour for a single day
+  const apptsByProHour = useMemo(() => {
+    const m = {};
+    const dayKey = format(weekStart, "yyyy-MM-dd");
+    appointments.forEach((a) => {
+      const d = format(parseISO(a.start), "yyyy-MM-dd");
+      if (d !== dayKey) return;
+      const h = parseISO(a.start).getHours();
+      const k = `${a.professional_id || "_none"}_${h}`;
+      (m[k] = m[k] || []).push(a);
+    });
+    return m;
+  }, [appointments, weekStart]);
+
   return (
     <div data-testid="agenda-page">
       <PageHeader
@@ -365,6 +415,22 @@ export default function Agenda() {
         subtitle={`${format(weekStart, "dd 'de' MMM", { locale: ptBR })} – ${format(addDays(weekStart, 6), "dd 'de' MMM yyyy", { locale: ptBR })}`}
         actions={
           <div className="flex items-center gap-2">
+            {professionals.length > 1 && (
+              <div className="flex items-center rounded-xl border border-border bg-card p-0.5" data-testid="view-mode-toggle">
+                <button
+                  data-testid="view-mode-all"
+                  onClick={() => setViewMode("all")}
+                  className={`text-[11px] px-3 py-1.5 rounded-lg transition-colors ${viewMode === "all" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
+                  Todas
+                </button>
+                <button
+                  data-testid="view-mode-bypro"
+                  onClick={() => setViewMode("by-professional")}
+                  className={`text-[11px] px-3 py-1.5 rounded-lg transition-colors ${viewMode === "by-professional" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
+                  Por profissional
+                </button>
+              </div>
+            )}
             <Button variant="outline" size="icon" className="rounded-xl" onClick={() => setWeekStart(subWeeks(weekStart, 1))} data-testid="prev-week-btn">
               <ChevronLeft className="h-4 w-4" />
             </Button>
@@ -400,6 +466,7 @@ export default function Agenda() {
 
       <div className="p-6 sm:p-8 animate-fade-up">
         <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
+          {viewMode === "all" ? (
           <div className="rounded-2xl border border-border bg-card overflow-hidden">
             {/* Header days */}
             <div className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border bg-muted/30">
@@ -438,6 +505,59 @@ export default function Agenda() {
               ))}
             </div>
           </div>
+          ) : (
+          /* By-professional view: single day × N professionals */
+          <div className="rounded-2xl border border-border bg-card overflow-hidden" data-testid="agenda-bypro-grid">
+            <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
+              <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                {format(weekStart, "EEEE, dd 'de' MMMM yyyy", { locale: ptBR })}
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="icon" className="h-7 w-7 rounded-lg" onClick={() => setWeekStart(addDays(weekStart, -1))} data-testid="prev-day-btn">
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                </Button>
+                <Button variant="outline" size="icon" className="h-7 w-7 rounded-lg" onClick={() => setWeekStart(addDays(weekStart, 1))} data-testid="next-day-btn">
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+            {/* Pro header */}
+            <div className="grid border-b border-border bg-muted/20"
+              style={{ gridTemplateColumns: `60px repeat(${professionals.length}, 1fr)` }}>
+              <div />
+              {professionals.map((p) => (
+                <div key={p.user_id} className="px-3 py-3 text-center border-l border-border">
+                  <div className="flex items-center justify-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: p.color || "#B76E79" }} />
+                    <div className="font-display text-sm font-semibold tracking-tight truncate" title={p.name}>{p.name}</div>
+                  </div>
+                  {p.specialty && <div className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5 truncate">{p.specialty}</div>}
+                </div>
+              ))}
+            </div>
+            {/* Grid hours × pros */}
+            <div className="grid" style={{ gridTemplateColumns: `60px repeat(${professionals.length}, 1fr)` }}>
+              {HOURS.map((h) => (
+                <React.Fragment key={h}>
+                  <div className="text-[11px] text-muted-foreground text-right pr-2 pt-1 border-t border-border" style={{ height: SLOT_HEIGHT }}>
+                    {String(h).padStart(2, "0")}:00
+                  </div>
+                  {professionals.map((p) => {
+                    const k = `${p.user_id}_${h}`;
+                    const items = apptsByProHour[k] || [];
+                    return (
+                      <ProHourCell key={`${p.user_id}_${h}`} day={weekStart} hour={h} pro={p} onEmptyClick={onEmptyClick}>
+                        {items.map((a) => (
+                          <ApptBlock key={a.appointment_id} appointment={a} onClick={onApptClick} dragging={dragging} />
+                        ))}
+                      </ProHourCell>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+          )}
 
           <DragOverlay>
             {activeDrag ? (

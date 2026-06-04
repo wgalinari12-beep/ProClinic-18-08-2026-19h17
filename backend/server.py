@@ -159,12 +159,35 @@ class FinancialEntryIn(BaseModel):
     paid: bool = False
     payment_method: Optional[str] = None
     patient_id: Optional[str] = None
+    budget_id: Optional[str] = None
+    appointment_id: Optional[str] = None
 
 
 class FinancialEntryOut(FinancialEntryIn):
     entry_id: str
     clinic_id: str
     created_at: str
+
+
+class BudgetItemIn(BaseModel):
+    procedure_id: Optional[str] = None
+    name: str
+    quantity: int = 1
+    unit_price: float = 0
+    discount_percent: float = 0  # 0..100
+    discount_value: float = 0    # absolute R$ off (applied after percent)
+
+
+class BudgetIn(BaseModel):
+    patient_id: str
+    appointment_id: Optional[str] = None
+    items: List[BudgetItemIn] = []
+    notes: Optional[str] = None
+    payment_method: Optional[str] = None    # à vista | pix | cartão | boleto | parcelado
+    installments: int = 1
+    valid_until: Optional[str] = None  # ISO date
+    status: Literal["rascunho", "enviado", "aprovado", "recusado", "expirado"] = "rascunho"
+    patient_signature: Optional[str] = None  # base64 png
 
 
 class AIChatIn(BaseModel):
@@ -602,6 +625,7 @@ async def delete_appointment(appointment_id: str, user: dict = Depends(get_curre
 # ============================================================
 @api_router.get("/medical-records")
 async def list_records(patient_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
     q = role_record_filter(user)
     if patient_id:
         q["patient_id"] = patient_id
@@ -611,6 +635,7 @@ async def list_records(patient_id: Optional[str] = None, user: dict = Depends(ge
 
 @api_router.post("/medical-records")
 async def create_record(data: MedicalRecordIn, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
     record_id = f"rec_{uuid.uuid4().hex[:12]}"
     p = await db.patients.find_one(
         {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0, "name": 1}
@@ -634,6 +659,7 @@ async def create_record(data: MedicalRecordIn, user: dict = Depends(get_current_
 # ============================================================
 @api_router.get("/anamnesis")
 async def list_anamnesis(patient_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
     q = {"clinic_id": user["clinic_id"]}
     if patient_id:
         q["patient_id"] = patient_id
@@ -643,6 +669,7 @@ async def list_anamnesis(patient_id: Optional[str] = None, user: dict = Depends(
 
 @api_router.post("/anamnesis")
 async def create_anamnesis(data: AnamnesisIn, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
     anamnesis_id = f"ana_{uuid.uuid4().hex[:12]}"
     p = await db.patients.find_one(
         {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0, "name": 1}
@@ -1249,6 +1276,7 @@ class AnamnesisModuleIn(BaseModel):
 
 @api_router.get("/anamnesis-modules")
 async def list_anamnesis_modules(patient_id: str, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
     q = role_record_filter(user)
     q["patient_id"] = patient_id
     docs = await db.anamnesis_modules.find(q, {"_id": 0}).to_list(20)
@@ -1257,6 +1285,7 @@ async def list_anamnesis_modules(patient_id: str, user: dict = Depends(get_curre
 
 @api_router.post("/anamnesis-modules")
 async def save_anamnesis_module(data: AnamnesisModuleIn, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
     p = await db.patients.find_one(
         {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]},
         {"_id": 0, "name": 1},
@@ -1317,6 +1346,7 @@ async def start_attendance(
     payload: Dict[str, Any], user: dict = Depends(get_current_user)
 ):
     """Start (or resume) an attendance session for an appointment."""
+    forbid_recepcao_clinical(user)
     appointment_id = payload.get("appointment_id")
     if not appointment_id:
         raise HTTPException(status_code=400, detail="appointment_id obrigatório")
@@ -1363,6 +1393,7 @@ async def update_attendance(
 ):
     """Autosave attendance session draft. Identity fields (appointment_id, patient_id)
     cannot be mutated here — only session content."""
+    forbid_recepcao_clinical(user)
     update = data.model_dump(exclude_unset=True)
     # Identity fields are immutable post-creation
     update.pop("appointment_id", None)
@@ -1380,9 +1411,24 @@ async def update_attendance(
     return doc
 
 
+class FinalizeAttendanceIn(BaseModel):
+    payment_status: Optional[Literal["pago", "parcial", "nao_pago"]] = None
+    amount_total: Optional[float] = None       # if not provided, uses appt.price or budget.total
+    amount_paid: Optional[float] = None        # required for parcial
+    payment_method: Optional[str] = None       # pix | cartão | dinheiro | boleto
+    budget_id: Optional[str] = None            # link to a budget if any
+    due_date: Optional[str] = None             # for parcial/nao_pago balance
+
+
 @api_router.post("/attendance/{session_id}/finalize")
-async def finalize_attendance(session_id: str, user: dict = Depends(get_current_user)):
-    """Finalize: marks session concluida, copies into medical_records, marks appointment concluido."""
+async def finalize_attendance(
+    session_id: str,
+    payload: Optional[FinalizeAttendanceIn] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Finalize: marks session concluida, copies into medical_records, marks appointment concluido,
+    and (optionally) creates financial entry(ies) based on payment_status."""
+    forbid_recepcao_clinical(user)
     sess = await db.attendance_sessions.find_one(
         {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
     )
@@ -1405,6 +1451,8 @@ async def finalize_attendance(session_id: str, user: dict = Depends(get_current_
         "signed": bool(sess.get("evolution_signature")),
         "signature": sess.get("evolution_signature"),
         "duration_seconds": sess.get("duration_seconds") or 0,
+        "created_by": user["user_id"],
+        "created_by_name": user["name"],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.medical_records.insert_one(record)
@@ -1420,17 +1468,295 @@ async def finalize_attendance(session_id: str, user: dict = Depends(get_current_
             {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
             {"$set": {"status": "concluido"}},
         )
-    return {"ok": True, "record_id": record["record_id"]}
+
+    # ===== Automatic financial registration =====
+    fin_created: List[str] = []
+    if payload and payload.payment_status:
+        # determine total: budget total > payload.amount_total > appointment.price > 0
+        total = None
+        budget_doc = None
+        if payload.budget_id:
+            budget_doc = await db.budgets.find_one(
+                {"budget_id": payload.budget_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+            )
+            if budget_doc:
+                total = budget_doc.get("total")
+        if total is None and payload.amount_total is not None:
+            total = float(payload.amount_total)
+        if total is None and sess.get("appointment_id"):
+            apt = await db.appointments.find_one(
+                {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
+                {"_id": 0, "price": 1},
+            )
+            if apt:
+                total = float(apt.get("price") or 0)
+        total = float(total or 0)
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        category = "Procedimentos"
+        description = f"{sess.get('procedure') or 'Atendimento'} — {sess.get('patient_name') or ''}".strip(" —")
+        base_entry = {
+            "clinic_id": user["clinic_id"],
+            "type": "receita",
+            "category": category,
+            "patient_id": sess["patient_id"],
+            "appointment_id": sess.get("appointment_id"),
+            "budget_id": payload.budget_id,
+            "payment_method": payload.payment_method,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": user["user_id"],
+        }
+        if payload.payment_status == "pago":
+            entry = {**base_entry,
+                     "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+                     "description": description,
+                     "amount": total,
+                     "due_date": today,
+                     "paid": True,
+                     "paid_at": today}
+            await db.financial_entries.insert_one(entry)
+            fin_created.append(entry["entry_id"])
+        elif payload.payment_status == "parcial":
+            paid_amt = float(payload.amount_paid or 0)
+            balance = max(0.0, total - paid_amt)
+            if paid_amt > 0:
+                e1 = {**base_entry,
+                      "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+                      "description": f"{description} (entrada)",
+                      "amount": paid_amt,
+                      "due_date": today,
+                      "paid": True,
+                      "paid_at": today}
+                await db.financial_entries.insert_one(e1)
+                fin_created.append(e1["entry_id"])
+            if balance > 0:
+                e2 = {**base_entry,
+                      "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+                      "description": f"{description} (saldo)",
+                      "amount": balance,
+                      "due_date": payload.due_date or today,
+                      "paid": False}
+                await db.financial_entries.insert_one(e2)
+                fin_created.append(e2["entry_id"])
+        elif payload.payment_status == "nao_pago":
+            entry = {**base_entry,
+                     "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+                     "description": description,
+                     "amount": total,
+                     "due_date": payload.due_date or today,
+                     "paid": False}
+            await db.financial_entries.insert_one(entry)
+            fin_created.append(entry["entry_id"])
+
+        # link budget → approved
+        if budget_doc:
+            await db.budgets.update_one(
+                {"budget_id": payload.budget_id},
+                {"$set": {"status": "aprovado", "approved_at": datetime.now(timezone.utc).isoformat()}},
+            )
+
+    return {"ok": True, "record_id": record["record_id"], "financial_entries": fin_created}
 
 
 @api_router.get("/attendance/by-appointment/{appointment_id}")
 async def get_attendance_by_appointment(appointment_id: str, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
     sess = await db.attendance_sessions.find_one(
         {"appointment_id": appointment_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
     )
     if not sess:
         return None
     return sess
+
+
+# ============================================================
+# Budgets (Orçamentos)
+# ============================================================
+def _compute_budget_totals(items: List[Dict[str, Any]]) -> Dict[str, float]:
+    subtotal = 0.0
+    discount = 0.0
+    for it in items:
+        qty = float(it.get("quantity") or 0)
+        unit = float(it.get("unit_price") or 0)
+        line_gross = qty * unit
+        pct = float(it.get("discount_percent") or 0)
+        val = float(it.get("discount_value") or 0)
+        line_discount = (line_gross * pct / 100.0) + val
+        line_discount = min(line_discount, line_gross)
+        subtotal += line_gross
+        discount += line_discount
+    total = max(0.0, subtotal - discount)
+    return {"subtotal": round(subtotal, 2), "discount": round(discount, 2), "total": round(total, 2)}
+
+
+def _budget_public_token(budget_id: str, clinic_id: str) -> str:
+    payload = {
+        "scope": "budget",
+        "bid": budget_id,
+        "clinic": clinic_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=60),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+@api_router.get("/budgets")
+async def list_budgets(
+    patient_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    forbid_recepcao_clinical(user)
+    q = {"clinic_id": user["clinic_id"]}
+    if patient_id:
+        q["patient_id"] = patient_id
+    if user.get("role") == "profissional":
+        q["created_by"] = user["user_id"]
+    docs = await db.budgets.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return docs
+
+
+@api_router.get("/budgets/{budget_id}")
+async def get_budget(budget_id: str, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    doc = await db.budgets.find_one(
+        {"budget_id": budget_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+    return doc
+
+
+@api_router.post("/budgets")
+async def create_budget(data: BudgetIn, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    p = await db.patients.find_one(
+        {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]},
+        {"_id": 0, "name": 1},
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Paciente não encontrado")
+    items = [i.model_dump() for i in data.items]
+    totals = _compute_budget_totals(items)
+    budget_id = f"bud_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "budget_id": budget_id,
+        "clinic_id": user["clinic_id"],
+        "patient_id": data.patient_id,
+        "patient_name": p["name"],
+        "appointment_id": data.appointment_id,
+        "items": items,
+        "notes": data.notes,
+        "payment_method": data.payment_method,
+        "installments": data.installments,
+        "valid_until": data.valid_until,
+        "status": data.status,
+        "patient_signature": data.patient_signature,
+        "subtotal": totals["subtotal"],
+        "discount": totals["discount"],
+        "total": totals["total"],
+        "created_by": user["user_id"],
+        "created_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    doc["public_token"] = _budget_public_token(budget_id, user["clinic_id"])
+    await db.budgets.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/budgets/{budget_id}")
+async def update_budget(budget_id: str, data: BudgetIn, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    target = await db.budgets.find_one(
+        {"budget_id": budget_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+    items = [i.model_dump() for i in data.items]
+    totals = _compute_budget_totals(items)
+    update = data.model_dump()
+    update["items"] = items
+    update.update({
+        "subtotal": totals["subtotal"],
+        "discount": totals["discount"],
+        "total": totals["total"],
+        "updated_by": user["user_id"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.budgets.update_one({"budget_id": budget_id}, {"$set": update})
+    doc = await db.budgets.find_one(
+        {"budget_id": budget_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    return doc
+
+
+@api_router.delete("/budgets/{budget_id}")
+async def delete_budget(budget_id: str, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    await db.budgets.delete_one(
+        {"budget_id": budget_id, "clinic_id": user["clinic_id"]}
+    )
+    return {"ok": True}
+
+
+@api_router.get("/budgets/{budget_id}/public-link")
+async def budget_public_link(budget_id: str, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    doc = await db.budgets.find_one(
+        {"budget_id": budget_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+    token = doc.get("public_token") or _budget_public_token(budget_id, user["clinic_id"])
+    if not doc.get("public_token"):
+        await db.budgets.update_one({"budget_id": budget_id}, {"$set": {"public_token": token}})
+    return {"token": token}
+
+
+@api_router.get("/public/budgets/{token}")
+async def get_public_budget(token: str):
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="Link expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Token inválido")
+    if payload.get("scope") != "budget":
+        raise HTTPException(status_code=400, detail="Token inválido")
+    doc = await db.budgets.find_one(
+        {"budget_id": payload["bid"], "clinic_id": payload["clinic"]},
+        {"_id": 0, "public_token": 0},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+    clinic = await db.clinics.find_one({"clinic_id": payload["clinic"]}, {"_id": 0})
+    return {"budget": doc, "clinic": clinic}
+
+
+@api_router.post("/public/budgets/{token}/sign")
+async def sign_public_budget(token: str, payload: Dict[str, Any]):
+    try:
+        p = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="Link expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Token inválido")
+    if p.get("scope") != "budget":
+        raise HTTPException(status_code=400, detail="Token inválido")
+    action = payload.get("action")
+    if action not in {"aprovar", "recusar"}:
+        raise HTTPException(status_code=400, detail="Ação inválida")
+    update = {
+        "status": "aprovado" if action == "aprovar" else "recusado",
+        "responded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if action == "aprovar" and payload.get("signature"):
+        update["patient_signature"] = payload["signature"]
+    await db.budgets.update_one(
+        {"budget_id": p["bid"], "clinic_id": p["clinic"]},
+        {"$set": update},
+    )
+    return {"ok": True, "status": update["status"]}
 
 
 # ============================================================
@@ -1875,6 +2201,12 @@ async def mobile_upload_files(token: str):
 def require_admin(user: dict):
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Apenas administradores")
+
+
+def forbid_recepcao_clinical(user: dict):
+    """Recepcionistas não podem acessar dados clínicos (prontuário/anamnese/atendimento)."""
+    if user.get("role") == "recepcao":
+        raise HTTPException(status_code=403, detail="Recepção não tem acesso a dados clínicos")
 
 
 class StaffUserIn(BaseModel):

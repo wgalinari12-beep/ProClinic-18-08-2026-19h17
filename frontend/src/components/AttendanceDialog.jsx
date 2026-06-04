@@ -9,12 +9,14 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
   Clock, AlertCircle, Save, Sparkles, FileSignature, CheckCircle2,
-  ClipboardList, FileText, Pill, Loader2, X,
+  ClipboardList, FileText, Pill, Loader2, X, Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
 import PhotoUploader from "@/components/PhotoUploader";
 import SignaturePad from "@/components/SignaturePad";
 import FichaForm from "@/components/FichaForm";
+import BudgetEditor from "@/components/BudgetEditor";
+import CompletePaymentDialog from "@/components/CompletePaymentDialog";
 import {
   SCHEMA_GERAL, SCHEMA_FACIAL, SCHEMA_CORPORAL, SCHEMA_CAPILAR,
 } from "@/components/ficha-schemas";
@@ -58,6 +60,10 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   // Patient completion form state (used when missing fields)
   const [pForm, setPForm] = useState({});
 
+  // Budget linked to this attendance (last saved)
+  const [linkedBudget, setLinkedBudget] = useState(null);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+
   // Load on open
   useEffect(() => {
     if (!open || !appointment) return;
@@ -78,6 +84,15 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
         });
         setSession(sess);
         setSeconds(sess.duration_seconds || 0);
+        // 3. load existing budget (if any) for this appointment
+        try {
+          const { data: budgets } = await api.get("/budgets", {
+            params: { patient_id: appointment.patient_id },
+          });
+          const linked = (budgets || []).find((b) => b.appointment_id === appointment.appointment_id);
+          if (linked) setLinkedBudget(linked);
+          else setLinkedBudget(null);
+        } catch { /* ignore */ }
         setStage("inProgress");
       } catch (e) {
         toast.error("Erro ao iniciar atendimento");
@@ -199,9 +214,9 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       setTab("assinatura");
       return;
     }
+    // Save current draft, then open the payment dialog
     setBusy(true);
     try {
-      // ensure latest data saved
       await api.put(`/attendance/${session.session_id}`, {
         patient_id: session.patient_id,
         appointment_id: session.appointment_id,
@@ -219,13 +234,22 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
         status: "rascunho",
         duration_seconds: seconds,
       });
-      await api.post(`/attendance/${session.session_id}/finalize`);
-      toast.success("Atendimento concluído");
+      setPaymentOpen(true);
+    } catch (e) {
+      toast.error("Erro ao salvar rascunho");
+    } finally { setBusy(false); }
+  };
+
+  const confirmFinalize = async (paymentPayload) => {
+    try {
+      await api.post(`/attendance/${session.session_id}/finalize`, paymentPayload);
+      toast.success("Atendimento concluído e financeiro lançado");
+      setPaymentOpen(false);
       onCompleted?.();
       onOpenChange(false);
     } catch (e) {
       toast.error("Erro ao finalizar");
-    } finally { setBusy(false); }
+    }
   };
 
   return (
@@ -333,6 +357,9 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                   <TabsTrigger value="prescricao" data-testid="tab-prescricao" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                     <Pill className="h-3.5 w-3.5 mr-1.5" />Prescrição
                   </TabsTrigger>
+                  <TabsTrigger value="orcamento" data-testid="tab-orcamento" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
+                    <Wallet className="h-3.5 w-3.5 mr-1.5" />Orçamento
+                  </TabsTrigger>
                   <TabsTrigger value="assinatura" data-testid="tab-assinatura" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                     <FileSignature className="h-3.5 w-3.5 mr-1.5" />Assinatura
                   </TabsTrigger>
@@ -411,6 +438,16 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                     placeholder="Orientações pós-procedimento, cuidados, retornos..." rows={10} className="rounded-xl" data-testid="att-prescriptions" />
                 </TabsContent>
 
+                {/* Orçamento */}
+                <TabsContent value="orcamento" className="mt-5">
+                  <BudgetEditor
+                    patientId={session.patient_id}
+                    appointmentId={session.appointment_id}
+                    budgetId={linkedBudget?.budget_id}
+                    onSaved={(b) => setLinkedBudget(b)}
+                  />
+                </TabsContent>
+
                 {/* Assinatura */}
                 <TabsContent value="assinatura" className="mt-5 space-y-6">
                   <div>
@@ -460,6 +497,15 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
             </Button>
           </div>
         )}
+
+        <CompletePaymentDialog
+          open={paymentOpen}
+          onOpenChange={setPaymentOpen}
+          defaultTotal={appointment?.price || 0}
+          budgetTotal={linkedBudget?.total}
+          budgetId={linkedBudget?.budget_id}
+          onConfirm={confirmFinalize}
+        />
       </DialogContent>
     </Dialog>
   );

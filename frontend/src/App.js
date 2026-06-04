@@ -23,8 +23,16 @@ import Procedimentos from "@/pages/Procedimentos";
 import MinhaClinica from "@/pages/MinhaClinica";
 import ConfirmacaoPublica from "@/pages/ConfirmacaoPublica";
 import MobileUpload from "@/pages/MobileUpload";
+import OrcamentoPublico from "@/pages/OrcamentoPublico";
 import Equipe from "@/pages/Equipe";
 import ChangePasswordModal from "@/components/ChangePasswordModal";
+import { useAuth } from "@/contexts/AuthContext";
+
+function DenyRoles({ deny = [], children }) {
+  const { user } = useAuth();
+  if (user && deny.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  return children;
+}
 
 function AppRouter() {
   const location = useLocation();
@@ -37,6 +45,7 @@ function AppRouter() {
       <Route path="/login" element={<Login />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/confirmacao/:token" element={<ConfirmacaoPublica />} />
+      <Route path="/orcamento/:token" element={<OrcamentoPublico />} />
       <Route path="/upload-mobile" element={<MobileUpload />} />
       <Route
         path="/"
@@ -51,12 +60,12 @@ function AppRouter() {
         <Route path="pacientes" element={<Patients />} />
         <Route path="pacientes/:id" element={<PatientDetail />} />
         <Route path="agenda" element={<Agenda />} />
-        <Route path="prontuario" element={<Prontuario />} />
-        <Route path="anamnese" element={<Anamnese />} />
+        <Route path="prontuario" element={<DenyRoles deny={["recepcao"]}><Prontuario /></DenyRoles>} />
+        <Route path="anamnese" element={<DenyRoles deny={["recepcao"]}><Anamnese /></DenyRoles>} />
         <Route path="procedimentos" element={<Procedimentos />} />
         <Route path="financeiro" element={<Financeiro />} />
         <Route path="mensagens" element={<Mensagens />} />
-        <Route path="assistente-ia" element={<AIAssistant />} />
+        <Route path="assistente-ia" element={<DenyRoles deny={["recepcao"]}><AIAssistant /></DenyRoles>} />
         <Route path="minha-clinica" element={<MinhaClinica />} />
         <Route path="equipe" element={<Equipe />} />
         <Route path="configuracoes" element={<Configuracoes />} />

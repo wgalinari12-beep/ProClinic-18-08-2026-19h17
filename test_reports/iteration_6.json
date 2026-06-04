@@ -1,0 +1,30 @@
+{
+  "summary": "Phase 2.2B (Budgets + Auto financial on finalize + Recepcao RBAC + Agenda view toggle) fully validated. New backend suite test_phase2_2b_api.py: 15/15 PASS — Budgets CRUD/totals (2 items qty=1 unit=1500 %=10 + qty=2 unit=250 R$=50 → subtotal=2000 discount=200 total=1800), list?patient_id, GET, PUT recalc, DELETE, GET /budgets/{id}/public-link returns JWT, GET /api/public/budgets/{token} no-auth returns {budget,clinic}, POST /api/public/budgets/{token}/sign aprovar+signature stores assinatura and sets status=aprovado, recusar sets status=recusado. Finalize-attendance: pago→1 entry paid=true amount=total; parcial 500/1500 due 2026-07-10→2 entries (entrada paid=true 500 + saldo paid=false 1000 due_date persisted); nao_pago→1 entry paid=false; budget_id linkado usa budget.total (900) e marca budget.status=aprovado. Recepcao RBAC: 403 em /anamnesis, /medical-records, /anamnesis-modules, /budgets, /attendance/start, /attendance/{id}/finalize; 200 em /patients, /appointments, /finance/entries. Frontend (Playwright): Login admin → /agenda mostra 'view-mode-toggle' com 'view-mode-all'/'view-mode-bypro'; clicar bypro renderiza 'agenda-bypro-grid'. Recepcao (ana.recep) Sidebar oculta corretamente Prontuário/Anamnese/Assistente IA/Procedimentos/Equipe/Minha Clínica e mostra Painel/Pacientes/Agenda/Financeiro/Mensagens. DenyRoles: /prontuario, /anamnese, /assistente-ia → /dashboard. PatientDetail (recepcao): tabs tab-prontuario/tab-anamnese/tab-orcamentos ausentes (apenas Timeline). Admin PatientDetail: todos 3 tabs presentes. Public /orcamento/{token} sem cookies/auth: 'orcamento-publico' renderiza com Total R$ 1.800,00, botões 'budget-approve-btn'/'budget-reject-btn' e canvas 'public-signature' presentes; após aprovar via API o painel 'Orçamento aprovado' (testid 'budget-approved') é mostrado.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_2b_api.py",
+    "/app/test_reports/pytest/phase2_2b_results.xml"
+  ],
+  "action_items": [
+    "(Opcional) Adicionar 'data-testid' nos tabs 'Timeline' (Recepcao PatientDetail) e nos rows da Agenda (current TimeSlot cells) para asserts diretos em Playwright sem fallback de texto.",
+    "(Opcional) Para o endpoint /api/anamnesis-modules, o query param patient_id é obrigatório — recepcao sem patient_id recebe 422 (pydantic) ao invés de 403. Considerar mover forbid_recepcao_clinical para um dependency-level guard ANTES da validação, para que recepcao receba 403 mesmo sem patient_id (consistência de RBAC). Não é bug funcional, mas afeta semântica de erro.",
+    "(Opcional) /api/budgets POST aceita installments=1 default sem validação cruzada com payment_method; considere reforçar regra (installments>1 só para 'cartão'/'parcelado')."
+  ],
+  "critical_code_review_comments": [
+    "server.py >2.300 linhas — Budgets (1573-1759) e finalize_attendance (1413-1558) já estão grandes, módulos prontos para extração em routers/{budgets.py, attendance.py, public.py}.",
+    "Budget public_token usa JWT_SECRET (mesma chave do access_token) com exp=60 dias. Considere uma chave separada (BUDGET_PUBLIC_SECRET) e/ou scope='budget' validado por audience.",
+    "_compute_budget_totals aplica discount_percent + discount_value cumulativamente por linha; a UI deve deixar claro para o usuário esta semântica (atualmente ambíguo no editor de itens).",
+    "FinalizeAttendanceIn não valida que amount_paid <= amount_total quando payment_status=='parcial'; valor pago > total cria saldo negativo silenciosamente (clampeado para 0 mas vale validar e retornar 400)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_2b_api.py (NEW — 15 tests, all passing)"
+  ],
+  "success_rate": {"backend": "100% (15/15 phase2.2B)", "frontend": "100% — todos os testids e fluxos cobertos pelo review_request foram validados"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, ana.recep@proclinic.com/ana123 — todos OK.",
+  "seed_data_creation": "Testes criaram orçamentos TEST_, vários appointments+sessions concluidos (status=concluido) e entradas em financial_entries para os pacientes existentes. Nenhum cleanup automático foi feito — pode haver poluição visível em /financeiro e na Timeline do paciente.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Fase 2.2B 100% validada (backend+frontend). Suite nova: /app/backend/tests/test_phase2_2b_api.py (15 tests, 3s). Public route /orcamento/:token funciona sem auth via clear_cookies. Pontos de atenção opcionais: (1) /anamnesis-modules retorna 422 ao invés de 403 para recepcao sem patient_id; (2) BudgetEditor não testado deep via UI por estar dentro de AttendanceDialog que requer um session iniciada — backend já cobre todo o fluxo de totals/CRUD/sign; (3) há vários appointments TEST_ concluidos e entries financeiros TEST_ acumulados de iterations anteriores no DB.",
+  "rca of the issue": "N/A — nenhum bug funcional encontrado em 2.2B."
+}
