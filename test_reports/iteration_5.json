@@ -1,0 +1,41 @@
+{
+  "summary": "Phase 2.2A backend + frontend fully validated. New backend suite test_phase2_2a_api.py: 19/19 PASS — login by email/CPF (formatted & digits-only), professionals-public for any role, admin-only /api/users list (403 for recepcao), create/update/delete/reset-password/change-password (first-access flag toggles correctly), signed URL upload + auth-less GET via ?sig=, invalid sig and missing sig both rejected, appointments persist professional_color and professional sees only own. Regression: 77/78 prior tests still pass (one outdated phase-2 test uses deprecated ?auth= query param — see action items). Frontend: Login page renders Email/CPF toggle (toggle-auth-email + toggle-auth-cpf), CPF field swaps in (login-cpf). Admin login → dashboard → nav-equipe visible. /equipe team-page shown; new-user-btn opens user-form with all required testids (user-name/email/cpf/role/color-*/pwd/save-btn). Creating new professional adds row and login flow triggers change-password-modal (cp-new/cp-confirm/cp-submit) which closes after submit. /agenda shows colored appointment cards (left-border per professional) and professionals-legend with all names+colors. Photo from /api/files served with 200/image/png.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/uploads + /api/files", "issue": "Old regression test_phase2_api.py::TestUploads::test_upload_and_serve_via_query_auth still expects deprecated ?auth=<jwt> query param. Implementation moved to ?sig=<signed-token>. Test is outdated, not a backend bug."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_2a_api.py",
+    "/app/test_reports/pytest/phase2_2a_results.xml"
+  ],
+  "action_items": [
+    "Optionally update /app/backend/tests/test_phase2_api.py::TestUploads to use new ?sig= signed-URL scheme (test_phase2_2a_api.py already covers this). Currently 1/78 regression failure is purely the outdated test, not a server bug.",
+    "Consider adding data-testid attributes for the per-appointment card (e.g. appointment-card-<id>) and the lightbox prev/next/close buttons to enable deeper Playwright validation in future iterations."
+  ],
+  "critical_code_review_comments": [
+    "server.py >2000 lines now — split into routers/{auth,users,files,appointments,patients,clinic,public,mobile_upload,messages,ai}. Phase 2.2A code lives mostly in lines 290-340, 497-565, 1154-1235, 1898-2025.",
+    "Signed URL JWT (sig) uses same secret as access tokens. Acceptable, but consider a distinct shorter-lived secret/audience to limit blast radius if access JWT leaks.",
+    "PUT /api/users/{id} requires full StaffUserIn body (re-supplying name/email/role) even when only the initial_password should change — frontend Equipe.jsx must therefore re-send all fields. Consider a PATCH semantics or separate /api/users/{id}/initial-password endpoint to mirror /reset-password.",
+    "Old photos saved before signed URL change are stored as bare /api/files/... paths without ?sig=. They still serve OK while a session cookie/token is available, but will 401 when accessed cross-origin without auth (mobile/external links). Consider a one-shot migration to append signature on read for legacy docs."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_2a_api.py (NEW — 19 tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (19/19 phase2.2A) + 98.7% regression (77/78, one outdated test)",
+    "frontend": "100% (all requested testids and flows verified)"
+  },
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com or CPF 111.222.333-44 (with or without punctuation)/bella123, ana.recep@proclinic.com/ana123 — all confirmed working.",
+  "seed_data_creation": "Tests create TEST_-prefixed professional users that are then soft-deleted by the suite. UI flow created one additional UI_TEST_<ts>@proclinic.com user that remains in DB as an active 'profissional' (visible in Equipe + agenda legend) for verification screenshots.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 2.2A complete. New backend regression file: /app/backend/tests/test_phase2_2a_api.py. Run with REACT_APP_BACKEND_URL exported. The single failing test in test_phase2_api.py (TestUploads.test_upload_and_serve_via_query_auth) is outdated and uses the old ?auth= scheme — not a backend bug. Lightbox prev/next/close were not deeply tested via Playwright because they lack discrete data-testids; main agent may want to add them. Signed URL is verified end-to-end via API test (binary PNG returned, content-type image/*).",
+  "rca of the issue": "N/A — no functional issues encountered."
+}

@@ -52,12 +52,15 @@ function ApptBlock({ appointment, onClick, dragging }) {
   const top = (start.getMinutes() / 60) * SLOT_HEIGHT;
   const height = (duration / 60) * SLOT_HEIGHT - 4;
 
+  const proColor = appointment.professional_color || "#B76E79";
   const style = {
     transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
     top: `${top}px`,
     height: `${height}px`,
     opacity: isDragging ? 0.4 : 1,
     zIndex: isDragging ? 50 : 1,
+    borderLeftColor: proColor,
+    boxShadow: `inset 3px 0 0 ${proColor}`,
   };
 
   const st = STATUS_STYLES[appointment.status] || STATUS_STYLES.agendado;
@@ -67,7 +70,7 @@ function ApptBlock({ appointment, onClick, dragging }) {
       ref={setNodeRef}
       style={style}
       data-testid={`apt-block-${appointment.appointment_id}`}
-      className={`absolute left-1 right-1 rounded-lg border-l-2 px-2 py-1 text-[11px] cursor-grab active:cursor-grabbing select-none overflow-hidden ${st.bg} ${st.text} ${st.border}`}
+      className={`absolute left-1 right-1 rounded-lg border-l-[3px] px-2 py-1 text-[11px] cursor-grab active:cursor-grabbing select-none overflow-hidden ${st.bg} ${st.text}`}
       onClick={(e) => {
         // Prevent click during drag; ignore if was dragging
         if (!isDragging && !dragging) {
@@ -116,6 +119,7 @@ export default function Agenda() {
   const [appointments, setAppointments] = useState([]);
   const [patients, setPatients] = useState([]);
   const [procedures, setProcedures] = useState([]);
+  const [professionals, setProfessionals] = useState([]);
   const [showPreReg, setShowPreReg] = useState(false);
   const [preReg, setPreReg] = useState({ name: "", phone: "" });
   const [preRegBusy, setPreRegBusy] = useState(false);
@@ -141,14 +145,16 @@ export default function Agenda() {
   const load = async () => {
     const start = format(weekStart, "yyyy-MM-dd");
     const end = format(addDays(weekStart, 7), "yyyy-MM-dd");
-    const [apt, pts, procs] = await Promise.all([
+    const [apt, pts, procs, profs] = await Promise.all([
       api.get("/appointments", { params: { start, end: end + "T23:59:59" } }),
       api.get("/patients"),
       api.get("/procedures", { params: { active_only: true } }),
+      api.get("/users/professionals-public").catch(() => ({ data: [] })),
     ]);
     setAppointments(apt.data);
     setPatients(pts.data);
     setProcedures(procs.data);
+    setProfessionals(profs.data || []);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [weekStart]);
 
@@ -157,10 +163,14 @@ export default function Agenda() {
     if (dragging) return;
     if (dialogMode) return; // prevent multiple modals
     const dateStr = format(day, "yyyy-MM-dd");
+    const defaultPro = professionals[0];
     setNewForm({
       patient_id: "", procedure: "Botox", start_date: dateStr,
       start_time: `${String(hour).padStart(2, "0")}:00`, duration: 60,
-      professional_name: "Dra. Bella Castro", status: "agendado",
+      professional_id: defaultPro?.user_id || "",
+      professional_name: defaultPro?.name || "Dra. Bella Castro",
+      professional_color: defaultPro?.color || "#B76E79",
+      status: "agendado",
       room: "Sala 1", price: 0, notes: "",
     });
     setDialogMode("new");
@@ -196,7 +206,9 @@ export default function Agenda() {
     try {
       await api.put(`/appointments/${apt.appointment_id}`, {
         patient_id: apt.patient_id,
+        professional_id: apt.professional_id,
         professional_name: apt.professional_name,
+        professional_color: apt.professional_color,
         procedure: apt.procedure,
         start: newStart.toISOString(),
         end: newEnd.toISOString(),
@@ -225,7 +237,9 @@ export default function Agenda() {
       await api.post("/appointments", {
         patient_id: newForm.patient_id,
         procedure: newForm.procedure,
+        professional_id: newForm.professional_id || null,
         professional_name: newForm.professional_name,
+        professional_color: newForm.professional_color,
         start: startDate.toISOString(),
         end: endDate.toISOString(),
         status: newForm.status,
@@ -270,7 +284,9 @@ export default function Agenda() {
     try {
       await api.put(`/appointments/${selected.appointment_id}`, {
         patient_id: selected.patient_id,
+        professional_id: selected.professional_id,
         professional_name: selected.professional_name,
+        professional_color: selected.professional_color,
         procedure: selected.procedure,
         start: selected.start, end: selected.end,
         status, room: selected.room, notes: selected.notes, price: selected.price || 0,
@@ -363,9 +379,13 @@ export default function Agenda() {
               onClick={() => {
                 if (dialogMode) return;
                 const today = format(new Date(), "yyyy-MM-dd");
+                const defaultPro = professionals[0];
                 setNewForm({
                   patient_id: "", procedure: "Botox", start_date: today,
-                  start_time: "09:00", duration: 60, professional_name: "Dra. Bella Castro",
+                  start_time: "09:00", duration: 60,
+                  professional_id: defaultPro?.user_id || "",
+                  professional_name: defaultPro?.name || "Dra. Bella Castro",
+                  professional_color: defaultPro?.color || "#B76E79",
                   status: "agendado", room: "Sala 1", price: 0, notes: "",
                 });
                 setDialogMode("new");
@@ -421,7 +441,10 @@ export default function Agenda() {
 
           <DragOverlay>
             {activeDrag ? (
-              <div className="rounded-lg bg-primary/15 text-primary border-l-2 border-l-primary px-2 py-1 text-[11px] shadow-xl">
+              <div
+                className="rounded-lg bg-card border-l-[3px] px-2 py-1 text-[11px] shadow-xl"
+                style={{ borderLeftColor: activeDrag.professional_color || "#B76E79", boxShadow: `inset 3px 0 0 ${activeDrag.professional_color || "#B76E79"}` }}
+              >
                 <div className="font-medium">{activeDrag.patient_name}</div>
                 <div className="opacity-75 text-[10px]">{activeDrag.procedure}</div>
               </div>
@@ -438,6 +461,18 @@ export default function Agenda() {
           <span className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-destructive" /> Cancelado</span>
           <span className="ml-auto italic">Arraste para mover · Clique no card para detalhes · Clique em célula vazia para criar</span>
         </div>
+
+        {professionals.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground" data-testid="professionals-legend">
+            <span className="text-[10px] uppercase tracking-[0.18em] mr-1">Profissionais:</span>
+            {professionals.map((p) => (
+              <span key={p.user_id} className="flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full ring-1 ring-border" style={{ backgroundColor: p.color || "#B76E79" }} />
+                {p.name}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* New appointment dialog */}
@@ -496,6 +531,32 @@ export default function Agenda() {
                 {procedures.length === 0 && (
                   <p className="text-[11px] text-muted-foreground/80">
                     💡 Cadastre seus procedimentos em "Procedimentos" para preenchimento automático de valor e duração.
+                  </p>
+                )}
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Profissional *</Label>
+                <select required data-testid="form-professional" value={newForm.professional_id}
+                  onChange={(e) => {
+                    const pro = professionals.find((x) => x.user_id === e.target.value);
+                    setNewForm({
+                      ...newForm,
+                      professional_id: e.target.value,
+                      professional_name: pro?.name || "",
+                      professional_color: pro?.color || "#B76E79",
+                    });
+                  }}
+                  className="w-full h-11 rounded-xl border border-border bg-card px-3 text-sm">
+                  <option value="">Selecione...</option>
+                  {professionals.map((p) => (
+                    <option key={p.user_id} value={p.user_id}>
+                      {p.name}{p.specialty ? ` · ${p.specialty}` : ""}
+                    </option>
+                  ))}
+                </select>
+                {professionals.length === 0 && (
+                  <p className="text-[11px] text-muted-foreground/80">
+                    💡 Cadastre profissionais em "Equipe" para selecioná-los aqui.
                   </p>
                 )}
               </div>
