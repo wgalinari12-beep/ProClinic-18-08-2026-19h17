@@ -1275,8 +1275,10 @@ class AnamnesisModuleIn(BaseModel):
 
 
 @api_router.get("/anamnesis-modules")
-async def list_anamnesis_modules(patient_id: str, user: dict = Depends(get_current_user)):
+async def list_anamnesis_modules(user: dict = Depends(get_current_user), patient_id: Optional[str] = None):
     forbid_recepcao_clinical(user)
+    if not patient_id:
+        raise HTTPException(status_code=400, detail="patient_id é obrigatório")
     q = role_record_filter(user)
     q["patient_id"] = patient_id
     docs = await db.anamnesis_modules.find(q, {"_id": 0}).to_list(20)
@@ -1518,6 +1520,8 @@ async def finalize_attendance(
             fin_created.append(entry["entry_id"])
         elif payload.payment_status == "parcial":
             paid_amt = float(payload.amount_paid or 0)
+            if paid_amt > total:
+                raise HTTPException(status_code=400, detail="Valor pago não pode ser maior que o total")
             balance = max(0.0, total - paid_amt)
             if paid_amt > 0:
                 e1 = {**base_entry,

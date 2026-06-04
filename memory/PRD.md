@@ -7,7 +7,7 @@
 - **Frontend:** React 19, React Router 7, Tailwind, Shadcn UI, Recharts, lucide-react, @dnd-kit, react-signature-canvas, qrcode.react
 - **Backend:** FastAPI + Motor (MongoDB async), Emergent Object Storage (signed URLs)
 - **IA:** Claude Sonnet 4.5 via `emergentintegrations`
-- **Auth:** JWT customizado (email OU CPF) + Emergent Google OAuth + Role-Based Access Control
+- **Auth:** JWT customizado (email OU CPF) + Emergent Google OAuth + RBAC
 
 ## What's been implemented
 
@@ -15,36 +15,37 @@
 Auth JWT + Google, Dashboard, Pacientes, Agenda v1, Prontuário, Anamnese, Financeiro, IA, Sidebar, tema light/dark.
 
 ### Fase 2
-Agenda v2 (drag-drop), Atendimento clínico (cronômetro+autosave+5 tabs), 4 Fichas premium, Object Storage uploads, Assinatura touch, IA clínica expandida, Central de Mensagens.
+Agenda v2 (drag-drop), Atendimento clínico (cronômetro+autosave+tabs), 4 Fichas premium, Object Storage uploads, Assinatura touch, IA clínica expandida, Central de Mensagens.
 
 ### Fase 2.1
 IMC auto, doenças condicional, fotos por ficha, QR code mobile capture, pré-cadastro inline, Procedimentos CRUD, portal público de confirmação, Minha Clínica.
 
-### Fase 2.2A (04/Jun/2026) — Multiprofissional + RBAC + Photo Bug fix
-- ✅ **Signed URLs para fotos**: backend gera JWT de longa duração (`?sig=`); imagens renderizam mesmo sem token de usuário/cross-origin/JWT expirado.
-- ✅ **Login por email OU CPF** (com ou sem pontuação) — `POST /api/auth/login` aceita ambos.
-- ✅ **RBAC**: roles `admin`, `profissional`, `recepcao`, `financeiro`, `marketing`, `paciente` com filtros server-side.
-- ✅ **Segregação de prontuário**: profissional vê apenas próprios appointments/anamnese; admin vê tudo.
-- ✅ **CRUD de Equipe** (`/equipe`, admin only): cadastrar usuários com role, CPF, cor, senha inicial; reset de senha; soft-delete.
-- ✅ **Troca obrigatória de senha** no 1º acesso — `ChangePasswordModal` modal forçado, montado globalmente em `App.js`.
-- ✅ **Agenda colorida por profissional**: bloco do appointment usa `professional_color`; legenda de profissionais embaixo da grade; seletor de profissional no formulário.
-- ✅ **PhotoUploader v2 + Lightbox premium** (zoom 1x-5x, drag, prev/next, ESC, download).
-- ✅ **Backend tests**: 19/19 novos (`test_phase2_2a_api.py`) + 78/78 regressão.
+### Fase 2.2A — Multiprofissional + RBAC + Photo Bug fix (04/Jun/2026)
+Signed URLs para fotos (?sig=); Login email OU CPF; RBAC admin/profissional/recepcao/financeiro/marketing; Segregação de prontuário por profissional; CRUD de Equipe com cor + reset de senha; ChangePasswordModal forçado no 1º acesso; Agenda colorida por profissional; PhotoUploader v2 + Lightbox premium.
 
-## P0 backlog — Fase 2.2B (próxima sessão)
-- **Módulo de Orçamento** dentro do Atendimento (itens, descontos, totais, condições de pagamento, assinatura).
-- **Lançamento financeiro automático** ao concluir atendimento (Pago/Parcial/Não pago → registro em /financeiro).
-- **Permissões da Recepcionista**: visão simplificada de financeiro, sem prontuário clínico.
-- **WhatsApp Evolution API real** (aguardando credenciais URL + Instance + API Key do usuário).
+### Fase 2.2B — Orçamento + Financeiro auto + Visão por Profissional (04/Jun/2026)
+- ✅ **Módulo de Orçamento** completo: itens (catálogo + manual), descontos % e R$, totais auto, condições de pagamento, parcelas, validade.
+- ✅ **Orçamento dentro do Atendimento** (aba dedicada) + **botão Novo Orçamento na ficha do paciente**.
+- ✅ **Link público de Orçamento** (`/orcamento/:token` — JWT 60d) — paciente aprova com assinatura touch ou recusa, sem login.
+- ✅ **Lançamento financeiro automático** ao concluir atendimento — modal Pago/Parcial/Não pago → gera entrada(s) em /finance/entries (parcial cria entrada paga + saldo a vencer).
+- ✅ **Permissões refinadas da Recepção**: 403 server-side em /anamnesis, /medical-records, /anamnesis-modules, /budgets, /attendance/*; Sidebar/Routes/Tabs ocultos client-side.
+- ✅ **Agenda "Visão por Profissional"**: toggle no header (Todas | Por profissional → colunas paralelas por médico no dia atual; drag pode reassinar profissional).
+- ✅ **Backend tests**: 15/15 novos (`test_phase2_2b_api.py`).
+
+## P0 backlog — Fase 2.2C
+- **WhatsApp Evolution API real** — aguardando credenciais do usuário (URL + Instance + API Key).
+- **Logs de auditoria** — quem criou/alterou/concluiu, com timestamps.
+- **Refactor `server.py`** (>2350 linhas) em routers por domínio (auth, users, files, budgets, attendance, public, ai).
 
 ## P1 backlog
-- Refatorar `server.py` (~2050 linhas) em routers por domínio (`auth`, `users`, `files`, `appointments`, `patients`, `clinic`, `public`, `ai`).
-- Logs de auditoria (quem criou/alterou/concluiu com timestamps).
+- PDF do orçamento para download (atualmente HTML/link).
+- Token de orçamento com secret/scope separados (BUDGET_PUBLIC_SECRET).
+- Validar installments × payment_method.
 - Resize de duração na agenda (handle inferior do card).
-- Portal completo do paciente (login dedicado read-only).
 - Drawer mobile para AttendanceDialog.
+- Migration para anexar `?sig=` em fotos legadas.
+- Portal completo do paciente (login dedicado read-only).
 - Token de confirmação one-shot.
-- Migration para anexar `?sig=` em fotos legadas armazenadas antes da Fase 2.2A.
 
 ## P2 backlog
 - Assinatura ICP Brasil real.
@@ -53,8 +54,7 @@ IMC auto, doenças condicional, fotos por ficha, QR code mobile capture, pré-ca
 - Cobrança recorrente Stripe.
 - Mobile app nativo (PWA primeiro).
 - CORS hardening (origens explícitas em produção).
-- Distinct secret/audience para signed URL JWT.
-- PATCH semantics para `/api/users/{id}`.
+- Cleanup de seed/data TEST_ acumulado de iterations.
 
 ## Credenciais teste
 Ver `/app/memory/test_credentials.md`
