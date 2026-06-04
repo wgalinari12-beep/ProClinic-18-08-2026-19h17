@@ -215,7 +215,7 @@ PNG_1x1 = (
 
 
 class TestUploads:
-    def test_upload_and_serve_via_query_auth(self, auth):
+    def test_upload_and_serve_via_signed_url(self, auth):
         files = {"file": ("tiny.png", io.BytesIO(PNG_1x1), "image/png")}
         # multipart upload — do not set content-type header
         r = requests.post(f"{API}/uploads",
@@ -224,8 +224,9 @@ class TestUploads:
         assert r.status_code == 200, r.text
         data = r.json()
         assert data["file_id"] and data["url"] and data["path"]
-        # serve with ?auth=<jwt>
-        url = f"{BASE_URL}{data['url']}?auth={auth['token']}"
+        # url already includes the signature; serve with no Authorization at all
+        url = f"{BASE_URL}{data['url']}"
+        assert "?sig=" in url
         r2 = requests.get(url)
         assert r2.status_code == 200, r2.text
         assert r2.headers.get("Content-Type", "").startswith("image/")
