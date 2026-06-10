@@ -4,12 +4,17 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 import os
+import io
+import re
 import uuid
 import logging
 import bcrypt
 import jwt
 import httpx
 import requests
+import qrcode
+import markdown as md
+from xhtml2pdf import pisa
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal, Any, Dict
 
@@ -195,6 +200,24 @@ class AIChatIn(BaseModel):
     session_id: Optional[str] = None
     context: Optional[str] = None  # e.g. patient context
 
+
+# ----- Documentos Jurídicos (Fase 2.3A) -----
+class DocumentTemplateIn(BaseModel):
+    name: str
+    category: str = "consentimento"   # consentimento | contrato | termo | outro
+    content_md: str                   # markdown source with {{VARS}}
+    description: Optional[str] = None
+    active: bool = True
+
+
+class SignedDocumentIn(BaseModel):
+    template_id: str
+    patient_id: str
+    appointment_id: Optional[str] = None
+    procedure: Optional[str] = None
+    procedure_value: Optional[float] = None
+    # snapshot of rendered HTML (after variable substitution); created on POST
+    # signatures are added via dedicated endpoints
 
 # ============================================================
 # Auth utils
@@ -2355,6 +2378,500 @@ async def reset_password(user_id: str, payload: Dict[str, str], user: dict = Dep
         }},
     )
     return {"ok": True}
+
+
+# ============================================================
+# Documentos Jurídicos (Fase 2.3A)
+# ============================================================
+VARS_AVAILABLE = [
+    "PACIENTE_NOME", "PACIENTE_CPF", "PACIENTE_RG", "PACIENTE_ENDERECO",
+    "PACIENTE_TELEFONE", "PACIENTE_DATA_NASCIMENTO",
+    "PROFISSIONAL_NOME", "PROFISSIONAL_CPF", "PROFISSIONAL_CONSELHO", "PROFISSIONAL_REGISTRO",
+    "CLINICA_NOME", "CLINICA_CNPJ", "CLINICA_ENDERECO",
+    "DATA_ATUAL", "PROCEDIMENTO", "VALOR_PROCEDIMENTO",
+]
+
+
+def _doc_public_token(document_id: str, clinic_id: str, scope: str = "doc") -> str:
+    payload = {
+        "scope": scope, "doc": document_id, "clinic": clinic_id,
+        "exp": datetime.now(timezone.utc) + timedelta(days=180),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _render_template_vars(content_md: str, ctx: Dict[str, str]) -> str:
+    """Replace {{VAR}} occurrences (case-sensitive). Missing vars become empty string + flag."""
+    def repl(m):
+        key = m.group(1).strip()
+        return str(ctx.get(key, ""))
+    return re.sub(r"\{\{\s*([A-Z_]+)\s*\}\}", repl, content_md or "")
+
+
+def _money_br(v: Optional[float]) -> str:
+    if v is None:
+        return ""
+    try:
+        return f"R$ {float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return ""
+
+
+async def _build_doc_context(
+    patient: Dict[str, Any], professional: Dict[str, Any],
+    clinic: Dict[str, Any], procedure: Optional[str], value: Optional[float],
+) -> Dict[str, str]:
+    return {
+        "PACIENTE_NOME": patient.get("name", ""),
+        "PACIENTE_CPF": patient.get("cpf", ""),
+        "PACIENTE_RG": patient.get("rg", ""),
+        "PACIENTE_ENDERECO": patient.get("address", ""),
+        "PACIENTE_TELEFONE": patient.get("phone", ""),
+        "PACIENTE_DATA_NASCIMENTO": patient.get("birth_date", ""),
+        "PROFISSIONAL_NOME": professional.get("name", ""),
+        "PROFISSIONAL_CPF": professional.get("cpf", ""),
+        "PROFISSIONAL_CONSELHO": professional.get("conselho", professional.get("council", "")),
+        "PROFISSIONAL_REGISTRO": professional.get("registro", professional.get("registration", "")),
+        "CLINICA_NOME": (clinic or {}).get("name", ""),
+        "CLINICA_CNPJ": (clinic or {}).get("cnpj", ""),
+        "CLINICA_ENDERECO": (clinic or {}).get("address", ""),
+        "DATA_ATUAL": datetime.now(timezone.utc).astimezone().strftime("%d/%m/%Y"),
+        "PROCEDIMENTO": procedure or "",
+        "VALOR_PROCEDIMENTO": _money_br(value),
+    }
+
+
+async def _audit_log(action: str, *, user: Dict[str, Any], document_id: str,
+                     ip: Optional[str] = None, extra: Optional[Dict[str, Any]] = None):
+    await db.audit_logs.insert_one({
+        "audit_id": f"aud_{uuid.uuid4().hex[:12]}",
+        "action": action,
+        "document_id": document_id,
+        "clinic_id": user.get("clinic_id"),
+        "user_id": user.get("user_id"),
+        "user_name": user.get("name"),
+        "user_role": user.get("role"),
+        "ip": ip,
+        "extra": extra or {},
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+# ---------- Templates (admin write, all clinical roles read) ----------
+@api_router.get("/document-templates/variables")
+async def list_doc_variables(user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    return {"variables": VARS_AVAILABLE}
+
+
+@api_router.get("/document-templates")
+async def list_doc_templates(active_only: bool = False, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    q = {"clinic_id": user["clinic_id"]}
+    if active_only:
+        q["active"] = True
+    docs = await db.document_templates.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return docs
+
+
+@api_router.post("/document-templates")
+async def create_doc_template(data: DocumentTemplateIn, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    template_id = f"tpl_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "template_id": template_id,
+        "clinic_id": user["clinic_id"],
+        "name": data.name,
+        "category": data.category,
+        "content_md": data.content_md,
+        "description": data.description,
+        "active": data.active,
+        "created_by": user["user_id"],
+        "created_by_name": user["name"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.document_templates.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/document-templates/{template_id}")
+async def update_doc_template(template_id: str, data: DocumentTemplateIn, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    update = data.model_dump()
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    update["updated_by"] = user["user_id"]
+    res = await db.document_templates.update_one(
+        {"template_id": template_id, "clinic_id": user["clinic_id"]},
+        {"$set": update},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Modelo não encontrado")
+    doc = await db.document_templates.find_one({"template_id": template_id}, {"_id": 0})
+    return doc
+
+
+@api_router.delete("/document-templates/{template_id}")
+async def delete_doc_template(template_id: str, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    await db.document_templates.delete_one(
+        {"template_id": template_id, "clinic_id": user["clinic_id"]}
+    )
+    return {"ok": True}
+
+
+# ---------- Documents (signed) ----------
+def _doc_filter(user: dict) -> Dict[str, Any]:
+    q = {"clinic_id": user["clinic_id"]}
+    if user.get("role") == "profissional":
+        q["created_by"] = user["user_id"]
+    return q
+
+
+@api_router.get("/documents")
+async def list_documents(patient_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    q = _doc_filter(user)
+    if patient_id:
+        q["patient_id"] = patient_id
+    docs = await db.documents.find(q, {"_id": 0, "content_html": 0}).sort("created_at", -1).to_list(500)
+    return docs
+
+
+@api_router.get("/documents/{document_id}")
+async def get_document(document_id: str, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    q = _doc_filter(user)
+    q["document_id"] = document_id
+    doc = await db.documents.find_one(q, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    await _audit_log("viewed", user=user, document_id=document_id)
+    return doc
+
+
+@api_router.post("/documents")
+async def create_document(data: SignedDocumentIn, request: Request, user: dict = Depends(get_current_user)):
+    """Create a document from a template — auto-fills variables. Status = 'rascunho'."""
+    forbid_recepcao_clinical(user)
+    template = await db.document_templates.find_one(
+        {"template_id": data.template_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not template:
+        raise HTTPException(status_code=404, detail="Modelo não encontrado")
+    patient = await db.patients.find_one(
+        {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not patient:
+        raise HTTPException(status_code=404, detail="Paciente não encontrado")
+    clinic = await db.clinics.find_one({"clinic_id": user["clinic_id"]}, {"_id": 0})
+    professional = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0}) or user
+    ctx = await _build_doc_context(patient, professional, clinic, data.procedure, data.procedure_value)
+    rendered_md = _render_template_vars(template["content_md"], ctx)
+    content_html = md.markdown(rendered_md, extensions=["extra", "nl2br"])
+    document_id = f"doc_{uuid.uuid4().hex[:12]}"
+    doc = {
+        "document_id": document_id,
+        "clinic_id": user["clinic_id"],
+        "template_id": template["template_id"],
+        "template_name": template["name"],
+        "category": template.get("category", "outro"),
+        "patient_id": data.patient_id,
+        "patient_name": patient.get("name"),
+        "professional_id": user["user_id"],
+        "professional_name": professional.get("name"),
+        "appointment_id": data.appointment_id,
+        "procedure": data.procedure,
+        "procedure_value": data.procedure_value,
+        "context": ctx,
+        "content_md": rendered_md,
+        "content_html": content_html,
+        "status": "rascunho",   # rascunho | aguardando_paciente | finalizado
+        "patient_signature": None,
+        "professional_signature": None,
+        "signed_patient_at": None,
+        "signed_professional_at": None,
+        "pdf_path": None,
+        "created_by": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    doc["public_token"] = _doc_public_token(document_id, user["clinic_id"], scope="doc-sign")
+    await db.documents.insert_one(doc)
+    doc.pop("_id", None)
+    await _audit_log(
+        "created", user=user, document_id=document_id,
+        ip=request.client.host if request.client else None,
+        extra={"template_id": template["template_id"]},
+    )
+    return doc
+
+
+class DocumentSignIn(BaseModel):
+    signature: str            # base64 png
+    device: Optional[str] = None  # e.g. "tablet-ipad" / "desktop" / "mobile-qr"
+
+
+@api_router.put("/documents/{document_id}/sign-patient")
+async def sign_patient(document_id: str, data: DocumentSignIn, request: Request, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    q = _doc_filter(user)
+    q["document_id"] = document_id
+    doc = await db.documents.find_one(q, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    upd = {
+        "patient_signature": data.signature,
+        "signed_patient_at": datetime.now(timezone.utc).isoformat(),
+        "patient_sign_device": data.device or "desktop",
+        "patient_sign_ip": request.client.host if request.client else None,
+        "status": "aguardando_profissional" if not doc.get("professional_signature") else doc["status"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.documents.update_one({"document_id": document_id}, {"$set": upd})
+    await _audit_log("signed_patient", user=user, document_id=document_id,
+                     ip=request.client.host if request.client else None)
+    return {"ok": True}
+
+
+@api_router.put("/documents/{document_id}/sign-professional")
+async def sign_professional(document_id: str, data: DocumentSignIn, request: Request, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    q = _doc_filter(user)
+    q["document_id"] = document_id
+    doc = await db.documents.find_one(q, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    upd = {
+        "professional_signature": data.signature,
+        "signed_professional_at": datetime.now(timezone.utc).isoformat(),
+        "professional_sign_device": data.device or "desktop",
+        "professional_sign_ip": request.client.host if request.client else None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.documents.update_one({"document_id": document_id}, {"$set": upd})
+    await _audit_log("signed_professional", user=user, document_id=document_id,
+                     ip=request.client.host if request.client else None)
+    return {"ok": True}
+
+
+def _build_pdf_html(doc: Dict[str, Any], qr_data_url: str) -> str:
+    """Compose a clean printable HTML document."""
+    pat_sig = f'<img src="{doc["patient_signature"]}" />' if doc.get("patient_signature") else "<em>(não assinado)</em>"
+    pro_sig = f'<img src="{doc["professional_signature"]}" />' if doc.get("professional_signature") else "<em>(não assinado)</em>"
+    pat_when = doc.get("signed_patient_at") or "—"
+    pro_when = doc.get("signed_professional_at") or "—"
+    return f"""
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
+<style>
+  @page {{ size: A4; margin: 18mm 16mm 22mm 16mm; }}
+  body {{ font-family: Helvetica, Arial, sans-serif; font-size: 11pt; color: #1a1a1a; }}
+  h1, h2, h3 {{ color: #0a0a0a; font-family: Georgia, 'Times New Roman', serif; }}
+  h1 {{ font-size: 16pt; margin: 0 0 6pt; }}
+  h2 {{ font-size: 13pt; margin: 12pt 0 4pt; }}
+  p  {{ margin: 0 0 6pt; line-height: 1.45; text-align: justify; }}
+  ul, ol {{ margin: 4pt 0 8pt 18pt; }}
+  .header {{ border-bottom: 1px solid #d6c9bf; padding-bottom: 6pt; margin-bottom: 12pt; }}
+  .meta {{ color: #6b6b6b; font-size: 9pt; }}
+  .signatures {{ margin-top: 20pt; display: block; }}
+  .sigblock {{ display: inline-block; width: 46%; vertical-align: top; padding: 6pt 0; }}
+  .sigblock .label {{ font-size: 9pt; color: #6b6b6b; text-transform: uppercase; letter-spacing: 1pt; }}
+  .sigblock img {{ height: 60pt; max-width: 100%; }}
+  .footer-qr {{ position: absolute; bottom: 8mm; right: 14mm; text-align: right; font-size: 8pt; color: #999; }}
+  .footer-qr img {{ width: 60pt; height: 60pt; }}
+</style></head><body>
+<div class="header">
+  <h1>{doc.get('template_name','Documento')}</h1>
+  <p class="meta">{doc.get('context',{}).get('CLINICA_NOME','')} · CNPJ {doc.get('context',{}).get('CLINICA_CNPJ','—')} · {doc.get('context',{}).get('CLINICA_ENDERECO','')}</p>
+  <p class="meta">Paciente: <strong>{doc.get('patient_name')}</strong> · Profissional: <strong>{doc.get('professional_name')}</strong> · Data: {doc.get('context',{}).get('DATA_ATUAL','')}</p>
+</div>
+<div>{doc.get('content_html','')}</div>
+<div class="signatures">
+  <div class="sigblock">
+    <div class="label">Assinatura do Paciente</div>
+    {pat_sig}
+    <div class="meta">{pat_when}</div>
+  </div>
+  <div class="sigblock" style="margin-left:4%;">
+    <div class="label">Assinatura do Profissional</div>
+    {pro_sig}
+    <div class="meta">{pro_when}</div>
+  </div>
+</div>
+<div class="footer-qr">
+  <img src="{qr_data_url}" />
+  <div>Documento {doc.get('document_id')}<br/>Verifique em /documento/{doc.get('document_id')}/validar</div>
+</div>
+</body></html>
+"""
+
+
+def _generate_qr_data_url(text: str) -> str:
+    img = qrcode.make(text)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    import base64
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+@api_router.post("/documents/{document_id}/finalize")
+async def finalize_document(document_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Generate the final PDF and persist it. Both signatures must be present."""
+    forbid_recepcao_clinical(user)
+    q = _doc_filter(user)
+    q["document_id"] = document_id
+    doc = await db.documents.find_one(q, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    if not doc.get("patient_signature") or not doc.get("professional_signature"):
+        raise HTTPException(status_code=400, detail="Ambas assinaturas são obrigatórias antes de finalizar")
+    # build QR URL pointing to validation public page
+    validation_url = f"/documento/{document_id}/validar?t={doc.get('public_token','')}"
+    qr_url = _generate_qr_data_url(validation_url)
+    html_str = _build_pdf_html(doc, qr_url)
+    # generate PDF in memory
+    pdf_buf = io.BytesIO()
+    result = pisa.CreatePDF(src=html_str, dest=pdf_buf, encoding="utf-8")
+    if result.err:
+        raise HTTPException(status_code=500, detail="Erro ao gerar PDF")
+    pdf_bytes = pdf_buf.getvalue()
+    # persist via Emergent object storage (same as /uploads)
+    rel_path = f"{APP_NAME}/{user['clinic_id']}/{user['user_id']}/doc-{document_id}.pdf"
+    result = put_object(rel_path, pdf_bytes, "application/pdf")
+    file_id = f"file_{uuid.uuid4().hex[:12]}"
+    sig = make_file_signature(file_id, user["clinic_id"])
+    await db.files.insert_one({
+        "file_id": file_id,
+        "storage_path": result["path"],
+        "original_filename": f"{doc.get('template_name','documento')}.pdf",
+        "content_type": "application/pdf",
+        "size": result.get("size", len(pdf_bytes)),
+        "clinic_id": user["clinic_id"],
+        "uploaded_by": user["user_id"],
+        "uploaded_by_name": user.get("name"),
+        "is_deleted": False,
+        "signature": sig,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    file_url = f"/api/files/{result['path']}?sig={sig}"
+    await db.documents.update_one(
+        {"document_id": document_id},
+        {"$set": {
+            "status": "finalizado",
+            "pdf_path": result["path"],
+            "pdf_url": file_url,
+            "pdf_file_id": file_id,
+            "finalized_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    await _audit_log("finalized", user=user, document_id=document_id,
+                     ip=request.client.host if request.client else None)
+    updated = await db.documents.find_one({"document_id": document_id}, {"_id": 0})
+    return updated
+
+
+# ---------- Public endpoints (mobile signing + validation) ----------
+@api_router.get("/public/documents/{token}")
+async def get_public_doc(token: str):
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="Link expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Token inválido")
+    if payload.get("scope") not in {"doc-sign", "doc"}:
+        raise HTTPException(status_code=400, detail="Token inválido")
+    doc = await db.documents.find_one(
+        {"document_id": payload["doc"], "clinic_id": payload["clinic"]},
+        {"_id": 0, "patient_signature": 0, "professional_signature": 0, "public_token": 0},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    clinic = await db.clinics.find_one({"clinic_id": payload["clinic"]}, {"_id": 0})
+    return {
+        "document": doc,
+        "clinic": clinic,
+        "has_patient_signature": bool(doc.get("signed_patient_at")),
+        "has_professional_signature": bool(doc.get("signed_professional_at")),
+    }
+
+
+@api_router.post("/public/documents/{token}/sign-patient")
+async def public_sign_patient(token: str, payload: Dict[str, Any], request: Request):
+    try:
+        p = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="Link expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Token inválido")
+    if p.get("scope") != "doc-sign":
+        raise HTTPException(status_code=400, detail="Token inválido")
+    if not payload.get("signature"):
+        raise HTTPException(status_code=400, detail="Assinatura requerida")
+    upd = {
+        "patient_signature": payload["signature"],
+        "signed_patient_at": datetime.now(timezone.utc).isoformat(),
+        "patient_sign_device": payload.get("device") or "mobile-qr",
+        "patient_sign_ip": request.client.host if request.client else None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.documents.update_one({"document_id": p["doc"], "clinic_id": p["clinic"]}, {"$set": upd})
+    await db.audit_logs.insert_one({
+        "audit_id": f"aud_{uuid.uuid4().hex[:12]}",
+        "action": "signed_patient_public",
+        "document_id": p["doc"], "clinic_id": p["clinic"],
+        "user_id": None, "user_role": "patient",
+        "ip": request.client.host if request.client else None,
+        "extra": {"device": payload.get("device") or "mobile-qr"},
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True}
+
+
+@api_router.get("/public/documents/{token}/validate")
+async def public_validate(token: str):
+    try:
+        p = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=410, detail="Link expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Token inválido")
+    doc = await db.documents.find_one(
+        {"document_id": p["doc"], "clinic_id": p["clinic"]},
+        {"_id": 0, "patient_signature": 0, "professional_signature": 0,
+         "content_html": 0, "content_md": 0, "public_token": 0, "context": 0},
+    )
+    if not doc:
+        return {"valid": False, "reason": "not_found"}
+    clinic = await db.clinics.find_one({"clinic_id": p["clinic"]}, {"_id": 0, "name": 1})
+    return {
+        "valid": True,
+        "document_id": doc.get("document_id"),
+        "template_name": doc.get("template_name"),
+        "patient_name": doc.get("patient_name"),
+        "professional_name": doc.get("professional_name"),
+        "status": doc.get("status"),
+        "finalized_at": doc.get("finalized_at"),
+        "signed_patient_at": doc.get("signed_patient_at"),
+        "signed_professional_at": doc.get("signed_professional_at"),
+        "clinic_name": (clinic or {}).get("name"),
+    }
+
+
+# ---------- Audit ----------
+@api_router.get("/documents/{document_id}/audit")
+async def doc_audit(document_id: str, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    q = _doc_filter(user)
+    q["document_id"] = document_id
+    doc = await db.documents.find_one(q, {"_id": 0, "document_id": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    logs = await db.audit_logs.find(
+        {"document_id": document_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    ).sort("at", -1).to_list(500)
+    return logs
 
 
 # ============================================================

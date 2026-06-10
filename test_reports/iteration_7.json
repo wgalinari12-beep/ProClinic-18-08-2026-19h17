@@ -1,0 +1,37 @@
+{
+  "summary": "Phase 2.3A (Documentos Jurídicos) full validation. New backend suite /app/backend/tests/test_phase2_3a_documents.py: 23/23 PASS in ~6s. Frontend Playwright validated key flows for admin/recepcao/bella. PDF é gerado corretamente via xhtml2pdf e baixável via signed URL sem auth (Content-Type application/pdf, >1KB).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "DocumentTemplateEditor", "issue": "Ao clicar em uma variável da palette (ex: tpl-var-PACIENTE_NOME), o token é inserido no ÍNICIO da textarea (posição 0) em vez da posição atual do cursor. Resultado observado: '{{PACIENTE_NOME}}## Termo de Consentimento ...' sem separador. Funcional mas UX ruim.", "selector": "[data-testid='tpl-var-*'] + [data-testid='tpl-content']", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_3a_documents.py",
+    "/app/test_reports/pytest/phase2_3a_results.xml"
+  ],
+  "action_items": [
+    "(Opcional/UX) DocumentTemplateEditor.jsx: inserir variável no offset atual do textarea (selectionStart/End) ao invés de prefixar no índice 0; preservar conteúdo existente.",
+    "(Opcional/Code quality) server.py já passou 2900 linhas — o bloco 'Documentos Jurídicos' (2384-2874, ~490 linhas) é forte candidato a extração para routers/documents.py + helpers em services/document_render.py (markdown, _money_br, _build_pdf_html, _generate_qr_data_url).",
+    "(Opcional/Segurança) _doc_public_token usa JWT_SECRET (mesma chave do access token) com exp=180d. Considere uma chave dedicada (DOC_PUBLIC_SECRET) e/ou audience='doc' para mitigar reuso de token entre escopos.",
+    "(Opcional/RBAC) public_validate retorna {valid:true,...} sem qualquer rate-limit ou hash do document_id na URL pública — qualquer um com o token JWT consegue listar nome do paciente + profissional. Aceitável para validação, mas avalie redigir patient_name para iniciais (ex: 'S. G.') na resposta de validação pública."
+  ],
+  "critical_code_review_comments": [
+    "Frontend tpl-var-* insere variável no índice 0 do textarea ignorando posição do cursor (UX bug).",
+    "DocumentSignIn está sem device whitelist — qualquer string aceita (não é segurança, mas considere enum: desktop|tablet|mobile-qr).",
+    "_render_template_vars usa regex case-sensitive em UPPER; variáveis em minúsculo {{paciente_nome}} ficariam vazias silenciosamente. Considere log/warning de variáveis não reconhecidas no momento da criação do documento.",
+    "_build_pdf_html injeta doc['content_html'] sem sanitização — está OK porque o markdown é gerado pelo próprio backend a partir de content_md do template, mas se um admin malicioso colar HTML/JS no content_md ele entrará no PDF. xhtml2pdf é restrito mas vale documentar a confiança implícita no admin."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_3a_documents.py (NEW — 23 tests, all passing)"
+  ],
+  "success_rate": {"backend": "100% (23/23)", "frontend": "Admin/Recepcao/Bella core flows OK; PatientDetail DocumentGenerator não navegado via UI nesta iteração (selector de patient-row variou)"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, dra.lais@proclinic.com/lais123, ana.recep@proclinic.com/ana123 — todos OK. Atenção: /api/auth/login retorna 'token' (não 'access_token').",
+  "seed_data_creation": "Templates: 'TEST_ Termo Phase2.3A', 'TEST_UI_Template_Phase23A', 'TEST_ simple'. Documentos: ~3 docs criados pela bella (1 finalizado com PDF, 2 rascunho). PDFs em Object Storage path proclinic/<clinic>/<user>/doc-<id>.pdf.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 2.3A 100% backend validada (23/23). Frontend: nav-documentos OK (admin+bella, hidden p/ recepcao), /documentos→DenyRoles redirect p/ recepcao OK, DocumentTemplateEditor cria/edita templates com palette de variáveis + tpl-preview renderizando h2/strong/ul. Bella vê apenas tab 'Documentos assinados' (sem 'Biblioteca'). DocumentGenerator aberto via new-document-btn na ficha do paciente NÃO foi clicado via Playwright nesta sessão (a listagem em /pacientes ficou sem links renderizados no momento da query — provavelmente carregamento assíncrono mais lento). Recomenda-se validar manualmente: abrir /pacientes/<id>, clicar new-document-btn, escolher template, assinar nas tabs dg-tab-patient/dg-tab-pro com SignaturePad (base64 fake do prompt), finalizar e baixar PDF via dg-pdf-link. Backend cobre 100% deste fluxo. Variáveis no template usam {{VAR}} (DOUBLE braces) — o review_request menciona {VAR} (single) mas o regex em server.py exige {{...}}.",
+  "rca_of_the_issue": "N/A — nenhum bug funcional. Único UX issue: tpl-var-* insere no índice 0 do textarea (DocumentTemplateEditor.jsx — usar textarea.selectionStart/End ao invés de prefixar)."
+}

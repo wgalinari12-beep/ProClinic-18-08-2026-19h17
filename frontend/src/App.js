@@ -24,6 +24,9 @@ import MinhaClinica from "@/pages/MinhaClinica";
 import ConfirmacaoPublica from "@/pages/ConfirmacaoPublica";
 import MobileUpload from "@/pages/MobileUpload";
 import OrcamentoPublico from "@/pages/OrcamentoPublico";
+import DocumentoPublico from "@/pages/DocumentoPublico";
+import DocumentoValidacao from "@/pages/DocumentoValidacao";
+import Documentos from "@/pages/Documentos";
 import Equipe from "@/pages/Equipe";
 import ChangePasswordModal from "@/components/ChangePasswordModal";
 import { useAuth } from "@/contexts/AuthContext";
@@ -46,6 +49,8 @@ function AppRouter() {
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/confirmacao/:token" element={<ConfirmacaoPublica />} />
       <Route path="/orcamento/:token" element={<OrcamentoPublico />} />
+      <Route path="/documento-publico/:token" element={<DocumentoPublico />} />
+      <Route path="/documento/:documentId/validar" element={<DocumentoValidacao />} />
       <Route path="/upload-mobile" element={<MobileUpload />} />
       <Route
         path="/"
@@ -66,6 +71,7 @@ function AppRouter() {
         <Route path="financeiro" element={<Financeiro />} />
         <Route path="mensagens" element={<Mensagens />} />
         <Route path="assistente-ia" element={<DenyRoles deny={["recepcao"]}><AIAssistant /></DenyRoles>} />
+        <Route path="documentos" element={<DenyRoles deny={["recepcao"]}><Documentos /></DenyRoles>} />
         <Route path="minha-clinica" element={<MinhaClinica />} />
         <Route path="equipe" element={<Equipe />} />
         <Route path="configuracoes" element={<Configuracoes />} />

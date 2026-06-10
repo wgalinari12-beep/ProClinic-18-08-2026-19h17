@@ -17,6 +17,7 @@ import SignaturePad from "@/components/SignaturePad";
 import FichaForm from "@/components/FichaForm";
 import BudgetEditor from "@/components/BudgetEditor";
 import CompletePaymentDialog from "@/components/CompletePaymentDialog";
+import DocumentGenerator from "@/components/DocumentGenerator";
 import {
   SCHEMA_GERAL, SCHEMA_FACIAL, SCHEMA_CORPORAL, SCHEMA_CAPILAR,
 } from "@/components/ficha-schemas";
@@ -63,6 +64,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   // Budget linked to this attendance (last saved)
   const [linkedBudget, setLinkedBudget] = useState(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
+  const [docGenOpen, setDocGenOpen] = useState(false);
 
   // Load on open
   useEffect(() => {
@@ -277,6 +279,11 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                   <Clock className="h-3.5 w-3.5 text-primary" />
                   <span className="font-mono text-sm" data-testid="attendance-timer">{fmtDuration(seconds)}</span>
                 </div>
+              )}
+              {stage === "inProgress" && (
+                <Button variant="outline" size="sm" onClick={() => setDocGenOpen(true)} data-testid="attendance-doc-btn" className="rounded-xl h-8">
+                  <FileSignature className="h-3.5 w-3.5 mr-1.5" /> Documento
+                </Button>
               )}
               {savedAt && stage === "inProgress" && (
                 <Badge variant="outline" className="text-[10px] font-normal" data-testid="attendance-saved-indicator">
@@ -505,6 +512,15 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
           budgetTotal={linkedBudget?.total}
           budgetId={linkedBudget?.budget_id}
           onConfirm={confirmFinalize}
+        />
+
+        <DocumentGenerator
+          open={docGenOpen}
+          onOpenChange={setDocGenOpen}
+          patientId={session?.patient_id || appointment?.patient_id}
+          appointmentId={appointment?.appointment_id}
+          procedure={session?.procedure || appointment?.procedure}
+          procedureValue={appointment?.price}
         />
       </DialogContent>
     </Dialog>

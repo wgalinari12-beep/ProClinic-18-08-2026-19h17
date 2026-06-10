@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Calendar, FileText, ClipboardList,
   Wallet, Sparkles, Settings, LogOut, Sun, Moon, ChevronsLeft,
   Stethoscope, ChevronsRight, MessageSquare, Briefcase, Building2,
-  UserCog,
+  UserCog, FileSignature,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -16,6 +16,7 @@ const NAV = [
   { to: "/agenda", icon: Calendar, label: "Agenda" },
   { to: "/prontuario", icon: FileText, label: "Prontuário", hideRoles: ["recepcao"] },
   { to: "/anamnese", icon: ClipboardList, label: "Anamnese", hideRoles: ["recepcao"] },
+  { to: "/documentos", icon: FileSignature, label: "Documentos", hideRoles: ["recepcao"] },
   { to: "/procedimentos", icon: Briefcase, label: "Procedimentos", adminOnly: true },
   { to: "/financeiro", icon: Wallet, label: "Financeiro", roles: ["admin", "financeiro", "recepcao"] },
   { to: "/mensagens", icon: MessageSquare, label: "Mensagens" },

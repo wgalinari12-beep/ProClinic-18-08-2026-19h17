@@ -8,11 +8,12 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   ArrowLeft, Phone, Mail, MapPin, AlertTriangle, CalendarDays,
-  FileText, ClipboardList, Image as ImageIcon, Cake, Wallet,
+  FileText, ClipboardList, Image as ImageIcon, Cake, Wallet, FileSignature, ExternalLink,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import BudgetEditor from "@/components/BudgetEditor";
+import DocumentGenerator from "@/components/DocumentGenerator";
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function PatientDetail() {
@@ -24,8 +25,10 @@ export default function PatientDetail() {
   const [records, setRecords] = useState([]);
   const [anamnesis, setAnamnesis] = useState([]);
   const [budgets, setBudgets] = useState([]);
+  const [signedDocs, setSignedDocs] = useState([]);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetId, setBudgetId] = useState(null);
+  const [docGenOpen, setDocGenOpen] = useState(false);
 
   const canClinical = user?.role !== "recepcao";
 
@@ -40,6 +43,7 @@ export default function PatientDetail() {
           calls.push(api.get(`/medical-records`, { params: { patient_id: id } }));
           calls.push(api.get(`/anamnesis`, { params: { patient_id: id } }));
           calls.push(api.get(`/budgets`, { params: { patient_id: id } }));
+          calls.push(api.get(`/documents`, { params: { patient_id: id } }));
         }
         const res = await Promise.all(calls);
         setPatient(res[0].data);
@@ -48,6 +52,7 @@ export default function PatientDetail() {
           setRecords(res[2].data);
           setAnamnesis(res[3].data);
           setBudgets(res[4].data);
+          setSignedDocs(res[5].data);
         }
       } catch (e) {
         console.error(e);
@@ -73,6 +78,11 @@ export default function PatientDetail() {
         subtitle={patient.cpf ? `CPF · ${patient.cpf}` : "Perfil do paciente"}
         actions={
           <div className="flex items-center gap-2">
+            {canClinical && (
+              <Button variant="outline" size="sm" className="rounded-xl" onClick={() => setDocGenOpen(true)} data-testid="new-document-btn">
+                <FileSignature className="h-3.5 w-3.5 mr-1.5" /> Documento
+              </Button>
+            )}
             {canClinical && (
               <Button variant="outline" size="sm" className="rounded-xl" onClick={() => { setBudgetId(null); setBudgetOpen(true); }} data-testid="new-budget-btn">
                 <Wallet className="h-3.5 w-3.5 mr-1.5" /> Novo orçamento
@@ -158,6 +168,11 @@ export default function PatientDetail() {
               {canClinical && (
                 <TabsTrigger value="orcamentos" data-testid="tab-orcamentos" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                   <Wallet className="h-4 w-4 mr-1.5" />Orçamentos
+                </TabsTrigger>
+              )}
+              {canClinical && (
+                <TabsTrigger value="documentos" data-testid="tab-documentos" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
+                  <FileSignature className="h-4 w-4 mr-1.5" />Documentos
                 </TabsTrigger>
               )}
             </TabsList>
@@ -264,6 +279,52 @@ export default function PatientDetail() {
                 )}
               </TabsContent>
             )}
+
+            {canClinical && (
+              <TabsContent value="documentos" className="mt-5" data-testid="documentos-assinados">
+                {signedDocs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-8 text-center">Nenhum documento gerado para este paciente.</p>
+                ) : (
+                  <div className="rounded-xl border border-border bg-card overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted/30">
+                        <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                          <th className="px-4 py-2">Documento</th>
+                          <th className="px-4 py-2">Procedimento</th>
+                          <th className="px-4 py-2">Profissional</th>
+                          <th className="px-4 py-2">Data</th>
+                          <th className="px-4 py-2">Status</th>
+                          <th className="px-4 py-2" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {signedDocs.map((d) => (
+                          <tr key={d.document_id} className="hover:bg-muted/20" data-testid={`patient-doc-${d.document_id}`}>
+                            <td className="px-4 py-3">{d.template_name}</td>
+                            <td className="px-4 py-3 text-xs text-muted-foreground">{d.procedure || "—"}</td>
+                            <td className="px-4 py-3">{d.professional_name}</td>
+                            <td className="px-4 py-3 text-xs text-muted-foreground">{format(parseISO(d.created_at), "dd/MM/yyyy HH:mm", { locale: ptBR })}</td>
+                            <td className="px-4 py-3">
+                              <Badge variant="outline" className="text-[10px] uppercase">{d.status}</Badge>
+                            </td>
+                            <td className="px-4 py-3">
+                              {d.pdf_url ? (
+                                <a href={`${process.env.REACT_APP_BACKEND_URL}${d.pdf_url}`} target="_blank" rel="noreferrer"
+                                  className="text-primary hover:underline text-xs inline-flex items-center gap-1">
+                                  PDF <ExternalLink className="h-3 w-3" />
+                                </a>
+                              ) : (
+                                <span className="text-[11px] text-muted-foreground">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </TabsContent>
+            )}
           </Tabs>
         </div>
       </div>
@@ -281,6 +342,17 @@ export default function PatientDetail() {
           <BudgetEditor patientId={id} budgetId={budgetId} onSaved={(b) => setBudgetId(b.budget_id)} />
         </DialogContent>
       </Dialog>
+
+      <DocumentGenerator
+        open={docGenOpen}
+        onOpenChange={(o) => {
+          setDocGenOpen(o);
+          if (!o) {
+            api.get(`/documents`, { params: { patient_id: id } }).then((r) => setSignedDocs(r.data)).catch(() => {});
+          }
+        }}
+        patientId={id}
+      />
     </div>
   );
 }
