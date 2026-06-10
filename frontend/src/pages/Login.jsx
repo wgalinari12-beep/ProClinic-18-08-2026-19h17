@@ -39,7 +39,20 @@ export default function Login() {
       toast.success(mode === "login" ? "Bem-vindo(a) de volta" : "Conta criada");
       navigate("/dashboard", { replace: true });
     } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail) || err.message);
+      // Log raw error to console for diagnostics
+      // eslint-disable-next-line no-console
+      console.error("[Login error]", err, "response:", err.response);
+      let msg;
+      if (err.response?.data?.detail) {
+        msg = formatApiErrorDetail(err.response.data.detail);
+      } else if (err.response?.status) {
+        msg = `Erro ${err.response.status} no servidor. Tente novamente.`;
+      } else if (err.message === "Network Error" || !err.response) {
+        msg = "Não foi possível conectar ao servidor. Verifique sua conexão.";
+      } else {
+        msg = err.message || "Algo deu errado. Tente novamente.";
+      }
+      toast.error(msg);
     } finally {
       setBusy(false);
     }
