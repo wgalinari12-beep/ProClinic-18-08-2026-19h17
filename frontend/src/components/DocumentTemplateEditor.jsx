@@ -63,13 +63,16 @@ export default function DocumentTemplateEditor({ templateId, onSaved }) {
   const insertVar = (v) => {
     const tag = `{{${v}}}`;
     const el = textareaRef.current;
-    if (!el) { setContentMd((c) => c + " " + tag); return; }
-    const start = el.selectionStart || 0;
-    const end = el.selectionEnd || 0;
+    if (!el) { setContentMd((c) => (c ? c + " " + tag : tag)); return; }
+    const hadFocus = document.activeElement === el;
+    // If never focused yet, append at the end (don't prepend).
+    const start = hadFocus ? (el.selectionStart ?? el.value.length) : el.value.length;
+    const end = hadFocus ? (el.selectionEnd ?? el.value.length) : el.value.length;
     setContentMd((c) => c.slice(0, start) + tag + c.slice(end));
     setTimeout(() => {
       el.focus();
-      el.setSelectionRange(start + tag.length, start + tag.length);
+      const pos = start + tag.length;
+      el.setSelectionRange(pos, pos);
     }, 0);
   };
 

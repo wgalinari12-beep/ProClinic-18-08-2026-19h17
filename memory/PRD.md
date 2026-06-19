@@ -5,56 +5,67 @@
 
 ## Stack
 - **Frontend:** React 19, React Router 7, Tailwind, Shadcn UI, Recharts, lucide-react, @dnd-kit, react-signature-canvas, qrcode.react
-- **Backend:** FastAPI + Motor (MongoDB async), Emergent Object Storage (signed URLs)
+- **Backend:** FastAPI + Motor (MongoDB async), Emergent Object Storage (signed URLs), xhtml2pdf (PDF), python markdown
 - **IA:** Claude Sonnet 4.5 via `emergentintegrations`
-- **Auth:** JWT customizado (email OU CPF) + Emergent Google OAuth + RBAC
+- **Auth:** JWT (email OU CPF) + Google OAuth + RBAC (admin/profissional/recepcao/financeiro/marketing)
 
 ## What's been implemented
 
 ### Fase 1 — MVP
-Auth JWT + Google, Dashboard, Pacientes, Agenda v1, Prontuário, Anamnese, Financeiro, IA, Sidebar, tema light/dark.
+Auth, Dashboard, Pacientes, Agenda v1, Prontuário, Anamnese, Financeiro, IA, Sidebar, tema light/dark.
 
 ### Fase 2
-Agenda v2 (drag-drop), Atendimento clínico (cronômetro+autosave+tabs), 4 Fichas premium, Object Storage uploads, Assinatura touch, IA clínica expandida, Central de Mensagens.
+Agenda v2 (drag-drop), Atendimento clínico, 4 Fichas premium, Object Storage uploads, Assinatura touch, IA clínica, Mensagens.
 
 ### Fase 2.1
-IMC auto, doenças condicional, fotos por ficha, QR code mobile capture, pré-cadastro inline, Procedimentos CRUD, portal público de confirmação, Minha Clínica.
+Auto-IMC, fotos por ficha, QR mobile capture, Procedimentos CRUD, portal público de confirmação, Minha Clínica.
 
-### Fase 2.2A — Multiprofissional + RBAC + Photo Bug fix (04/Jun/2026)
-Signed URLs para fotos (?sig=); Login email OU CPF; RBAC admin/profissional/recepcao/financeiro/marketing; Segregação de prontuário por profissional; CRUD de Equipe com cor + reset de senha; ChangePasswordModal forçado no 1º acesso; Agenda colorida por profissional; PhotoUploader v2 + Lightbox premium.
+### Fase 2.2A — RBAC + Photo Bug fix (Jun/2026)
+Signed URLs para fotos; Login email OU CPF; RBAC; Segregação de prontuário; CRUD de Equipe; ChangePasswordModal forçado; Agenda colorida por profissional; Lightbox premium.
 
-### Fase 2.2B — Orçamento + Financeiro auto + Visão por Profissional (04/Jun/2026)
-- ✅ **Módulo de Orçamento** completo: itens (catálogo + manual), descontos % e R$, totais auto, condições de pagamento, parcelas, validade.
-- ✅ **Orçamento dentro do Atendimento** (aba dedicada) + **botão Novo Orçamento na ficha do paciente**.
-- ✅ **Link público de Orçamento** (`/orcamento/:token` — JWT 60d) — paciente aprova com assinatura touch ou recusa, sem login.
-- ✅ **Lançamento financeiro automático** ao concluir atendimento — modal Pago/Parcial/Não pago → gera entrada(s) em /finance/entries (parcial cria entrada paga + saldo a vencer).
-- ✅ **Permissões refinadas da Recepção**: 403 server-side em /anamnesis, /medical-records, /anamnesis-modules, /budgets, /attendance/*; Sidebar/Routes/Tabs ocultos client-side.
-- ✅ **Agenda "Visão por Profissional"**: toggle no header (Todas | Por profissional → colunas paralelas por médico no dia atual; drag pode reassinar profissional).
-- ✅ **Backend tests**: 15/15 novos (`test_phase2_2b_api.py`).
+### Fase 2.2B — Orçamento + Financeiro auto + Visão por Profissional
+Módulo de Orçamento (atendimento + ficha); Link público `/orcamento/:token`; Lançamento financeiro automático (Pago/Parcial/Não pago); Recepção bloqueada de prontuário; Agenda toggle Todas | Por profissional.
 
-## P0 backlog — Fase 2.2C
-- **WhatsApp Evolution API real** — aguardando credenciais do usuário (URL + Instance + API Key).
-- **Logs de auditoria** — quem criou/alterou/concluiu, com timestamps.
-- **Refactor `server.py`** (>2350 linhas) em routers por domínio (auth, users, files, budgets, attendance, public, ai).
+### Fase 2.3A — Documentos Jurídicos (Jun/2026)
+- ✅ **Biblioteca de modelos** (admin CRUD) com markdown + palette de 16 variáveis dinâmicas.
+- ✅ **Editor com preview HTML ao vivo** e inserção de variáveis na posição do cursor.
+- ✅ **Auto-preenchimento** ({{PACIENTE_NOME}}, {{PROFISSIONAL_NOME}}, {{CLINICA_NOME}}, {{PROCEDIMENTO}}, {{VALOR_PROCEDIMENTO}}, {{DATA_ATUAL}}, etc.) durante atendimento ou via ficha do paciente.
+- ✅ **Assinatura digital** do paciente + profissional via canvas touch (desktop/tablet/mobile).
+- ✅ **PDF final** gerado via xhtml2pdf com QR Code de validação, salvo em Object Storage (signed URL).
+- ✅ **Aba "Documentos Assinados"** na ficha do paciente.
+- ✅ **Sigilo profissional** server-side: profissional vê apenas docs que ele criou; admin vê tudo; recepção 403.
+- ✅ **Link público** `/documento-publico/:token` (paciente assina pelo celular via QR) e `/documento/:id/validar?t=` (validação pública do QR no PDF).
+- ✅ **Auditoria** (created/viewed/signed_patient/signed_professional/finalized/signed_patient_public com IP+device+timestamp).
+- ✅ **Backend tests**: 23/23 (`test_phase2_3a_documents.py`).
+- ✅ **Polimento pós-teste**: insertVar agora respeita o cursor (ou append ao final se nunca focado).
+
+## P0 backlog — Fase 2.3B (próxima)
+- **Import DOCX e PDF** como modelos (.docx via python-docx; PDF via pdfplumber → text → md).
+- **Relatórios de auditoria** com filtros (período, ação, usuário, paciente, documento).
+- **Mobile QR sign loop**: feedback imediato no desktop quando o paciente assina pelo celular (polling ou WebSocket leve).
+
+## P0 backlog — Fase 2.2C / paralelo
+- **WhatsApp Evolution API real** — aguardando credenciais (URL + Instance + API Key).
+- **Refactor `server.py`** (~2900 linhas) em routers por domínio: routes/documents.py, services/document_render.py, routes/budgets.py, routes/attendance.py, routes/auth.py.
 
 ## P1 backlog
-- PDF do orçamento para download (atualmente HTML/link).
-- Token de orçamento com secret/scope separados (BUDGET_PUBLIC_SECRET).
-- Validar installments × payment_method.
-- Resize de duração na agenda (handle inferior do card).
+- **Validação pública do QR**: redigir nome do paciente para iniciais (LGPD).
+- **DOC_PUBLIC_SECRET** separado do JWT_SECRET (+ audience='doc') para tokens de longa duração (180d).
+- Sanitização do `content_md` antes de injetar em PDF (proteção contra admin malicioso colar HTML/JS).
+- Whitelist de `device` (desktop|tablet|mobile-qr) no DocumentSignIn.
+- Warning quando variáveis em minúsculo ({{paciente_nome}}) não casam.
+- PDF do orçamento para download.
+- Resize de duração na agenda.
 - Drawer mobile para AttendanceDialog.
 - Migration para anexar `?sig=` em fotos legadas.
-- Portal completo do paciente (login dedicado read-only).
-- Token de confirmação one-shot.
 
 ## P2 backlog
-- Assinatura ICP Brasil real.
+- Assinatura ICP Brasil real (estrutura preparada via `audit_logs.action` + `pdf_path`).
+- Carimbo de tempo.
 - 2FA + biometria mobile.
 - White label multi-clínica.
-- Cobrança recorrente Stripe.
-- Mobile app nativo (PWA primeiro).
-- CORS hardening (origens explícitas em produção).
-- Cleanup de seed/data TEST_ acumulado de iterations.
+- Stripe recorrente.
+- Cleanup TEST_ data acumulado.
 
 ## Credenciais teste
 Ver `/app/memory/test_credentials.md`
