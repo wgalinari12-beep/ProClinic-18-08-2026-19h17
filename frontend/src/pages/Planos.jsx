@@ -6,7 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Check, Sparkles, Loader2, ArrowRight } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-
 const moneyBR = (n) => (Number(n) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
 const FEATURE_LIST = {
@@ -156,13 +155,14 @@ export default function Planos() {
                 </ul>
 
                 <Button onClick={() => goCheckout(p.plan_key)}
-                  disabled={current}
+                  disabled={current || user?.role !== "admin"}
+                  title={user?.role !== "admin" ? "Apenas o administrador pode assinar" : ""}
                   data-testid={`subscribe-${p.plan_key}`}
                   className={`mt-6 w-full h-11 rounded-xl ${
                     highlighted ? "bg-primary text-primary-foreground hover:bg-primary/90" :
                     "bg-card border border-border text-foreground hover:bg-muted/40"
                   }`}>
-                  {current ? "Plano atual" : <>Assinar <ArrowRight className="h-4 w-4 ml-1" /></>}
+                  {current ? "Plano atual" : user?.role !== "admin" ? "Pedir ao admin" : <>Assinar <ArrowRight className="h-4 w-4 ml-1" /></>}
                 </Button>
               </div>
             );

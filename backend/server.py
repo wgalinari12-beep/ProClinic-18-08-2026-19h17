@@ -3177,7 +3177,9 @@ async def asaas_webhook(request: Request, asaas_access_token: str = Header(defau
     if not ASAAS_WEBHOOK_TOKEN or asaas_access_token != ASAAS_WEBHOOK_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid webhook token")
     body = await request.json()
-    event_id = body.get("id") or body.get("event", "") + "_" + str(datetime.now(timezone.utc).timestamp())
+    event_id = body.get("id")
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Webhook payload missing 'id'")
     # idempotency
     if await db.webhook_events.find_one({"event_id": event_id}):
         return {"ok": True, "duplicate": True}
@@ -3236,9 +3238,10 @@ async def asaas_webhook(request: Request, asaas_access_token: str = Header(defau
 # ---------- Admin financial dashboard (super-admin/tenant-wide) ----------
 @api_router.get("/admin/finance/summary")
 async def admin_finance_summary(user: dict = Depends(get_current_user)):
-    """MRR/ARR, active count etc. — Fase 2.4A básico."""
+    """MRR/ARR, active count etc. — Fase 2.4A básico.
+    Scoped to caller's clinic — super-admin cross-tenant view fica para 2.4B."""
     require_admin(user)
-    subs = await db.subscriptions.find({}, {"_id": 0}).to_list(2000)
+    subs = await db.subscriptions.find({"clinic_id": user["clinic_id"]}, {"_id": 0}).to_list(2000)
     active = [s for s in subs if s.get("status") == "active"]
     trial = [s for s in subs if s.get("status") == "trial"]
     past_due = [s for s in subs if s.get("status") == "past_due"]
@@ -3275,6 +3278,11 @@ async def on_startup():
     init_storage()
     await seed_data()
     await seed_plans()
+    # ensure webhook idempotency at DB level
+    try:
+        await db.webhook_events.create_index("event_id", unique=True)
+    except Exception:
+        pass
     # ensure trial for the demo clinic (idempotent)
     admin = await db.users.find_one({"email": os.environ.get("ADMIN_EMAIL", "admin@proclinic.com")}, {"_id": 0})
     if admin:
