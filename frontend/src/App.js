@@ -27,6 +27,9 @@ import OrcamentoPublico from "@/pages/OrcamentoPublico";
 import DocumentoPublico from "@/pages/DocumentoPublico";
 import DocumentoValidacao from "@/pages/DocumentoValidacao";
 import Documentos from "@/pages/Documentos";
+import Planos from "@/pages/Planos";
+import Checkout from "@/pages/Checkout";
+import MinhaAssinatura from "@/pages/MinhaAssinatura";
 import Equipe from "@/pages/Equipe";
 import ChangePasswordModal from "@/components/ChangePasswordModal";
 import { useAuth } from "@/contexts/AuthContext";
@@ -72,6 +75,9 @@ function AppRouter() {
         <Route path="mensagens" element={<Mensagens />} />
         <Route path="assistente-ia" element={<DenyRoles deny={["recepcao"]}><AIAssistant /></DenyRoles>} />
         <Route path="documentos" element={<DenyRoles deny={["recepcao"]}><Documentos /></DenyRoles>} />
+        <Route path="planos" element={<Planos />} />
+        <Route path="checkout/:planKey" element={<Checkout />} />
+        <Route path="minha-assinatura" element={<MinhaAssinatura />} />
         <Route path="minha-clinica" element={<MinhaClinica />} />
         <Route path="equipe" element={<Equipe />} />
         <Route path="configuracoes" element={<Configuracoes />} />

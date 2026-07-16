@@ -1,0 +1,42 @@
+{
+  "summary": "Phase 2.4A (Subscriptions/Asaas) full backend + frontend validation. New pytest suite /app/backend/tests/test_phase2_4a_subscriptions.py: 20/20 PASS in ~22s (real HTTP calls to Asaas sandbox for customer/subscription/change-plan/cancel + webhook simulation with idempotency). Frontend: all data-testids present and correctly wired for admin (sidebar Assinatura item, trial-banner, /minha-assinatura, /planos with monthly↔yearly toggle, /checkout/:planKey PIX/BOLETO/CREDIT_CARD, checkout-confirmed screen). Sidebar 'Assinatura' item is correctly admin-only (hidden for bella + ana).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/subscriptions/checkout", "issue": "CPF/CNPJ is normalized only by stripping '.', '/', '-' but not spaces; if user sends '249.715.637-92 ' with trailing space it goes to Asaas as-is. Low risk (frontend trims), but consider .strip() defensively."},
+      {"endpoint": "POST /api/webhooks/asaas", "issue": "Fallback event_id when body has no 'id' concatenates event name + timestamp — this defeats idempotency for any provider retry that omits 'id'. Asaas always sends 'id' so it works, but consider requiring 'id' or hashing full body."},
+      {"endpoint": "GET /api/admin/finance/summary", "issue": "MRR computes 'value/12 if yearly else value' but active subs still on trial value=0 aren't excluded; however trial subs are correctly filtered (status=='active'). Formula OK. Note: no auth-level check that the caller is a super-admin — any admin of any clinic sees tenant-wide totals across ALL clinics. May be intentional for MVP but is a data-exposure risk once there are multiple clinics."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_4a_subscriptions.py",
+    "/app/test_reports/pytest/phase2_4a_results.xml"
+  ],
+  "action_items": [
+    "(Opcional/Segurança) /api/admin/finance/summary — adicionar checagem de super-admin ou filtrar por user['clinic_id'] para evitar vazamento tenant-wide quando houver múltiplas clínicas.",
+    "(Opcional/Robustez) Webhook: exigir campo 'id' no body — retornar 400 se ausente, em vez de gerar event_id dinâmico (que quebra idempotência).",
+    "(Opcional/Code quality) server.py agora tem 3287 linhas — bloco 'Subscriptions (Asaas)' (~2881-3256, ~375 linhas) é forte candidato para routers/subscriptions.py + services/asaas.py (helpers _asaas_headers, asaas_request, seed_plans, ensure_trial_subscription).",
+    "(Opcional/Feature parity) A rota /planos permite que bella/ana cliquem em 'subscribe-*' e sejam levadas para /checkout/:planKey onde receberão 403 no submit. Considere ocultar botão 'Assinar' (ou desabilitar) para não-admins, com tooltip 'Peça ao administrador'. Backend já protege, apenas UX."
+  ],
+  "critical_code_review_comments": [
+    "server.py: bloco Subscriptions/Asaas duplica lógica de normalização de CPF (linhas 3056 e 3095). Extrair helper _normalize_cpf().",
+    "webhook_events collection não tem índice único em event_id — atualmente idempotência funciona via find_one antes do insert, mas há race condition sob concorrência. Criar unique index em event_id.",
+    "asaas_request usa httpx.AsyncClient sem retry — em caso de timeout de rede, checkout falha completamente. Para produção, considerar 2-3 retries com backoff em métodos idempotentes (GET/DELETE).",
+    "PLAN_FEATURES é fonte-única de verdade no código; db.plans é apenas cópia via seed_plans. Se um admin editar db.plans manualmente para ativar 'ai=true' em starter, o backend AINDA vai bloquear (require_feature usa PLAN_FEATURES). Considere ler features do banco na hora, ou remover db.plans e servir do código."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_4a_subscriptions.py (NEW — 20 tests, all passing, resets/restores admin subscription state)"
+  ],
+  "success_rate": {"backend": "100% (20/20)", "frontend": "100% (checkout flow, sidebar RBAC, trial banner, plan cards, cycle toggle all OK)"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, ana.recep@proclinic.com/ana123 — todos OK. Webhook token: whsec_proclinic_a8f3d9e2c1b47506a92e3f81d5c6b0a4. Asaas sandbox key funcional (retorna sub_xxx e cus_xxx reais).",
+  "seed_data_creation": "Subscription do admin foi mutada durante os testes (trial→pending→active→starter→cancelled→starter→professional-active→trial-expired→professional-active) e RESTAURADA para status='trial' plan_key='professional' com trial_ends_at=+7d ao final. Webhook events com prefixo pay_test_phase24a_* foram limpos. Nenhum dado de outras clínicas foi tocado. Frontend submeteu 1 checkout PIX real como 'Premium mensal' que criou um gateway_customer_id no admin (sobrescrito pelo reset final).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 2.4A 100% validada (backend + frontend). O suite test_phase2_4a_subscriptions.py é AUTO-CLEANUP: faz reset da subscription do admin para trial ao final (TestZZZCleanup). Pode ser re-executado quantas vezes for necessário — cada run chama Asaas sandbox (criando customer + subscription + PUT cancel). Se ficar cheio, delete manualmente em https://sandbox.asaas.com. Feature gate em /api/ai/chat e /api/documents (POST) usa require_feature — validado. /api/admin/finance/summary hoje retorna tenant-wide sem filtro por clinic — deixado como está pois problema statement chama de 'admin financial dashboard' (Fase 2.4A básico). Frontend Planos.jsx exibe corretamente monthly R$59.90/99.90/149.90 e yearly R$47.90/79.90/119.90 (equivalente/mês). CC form fields aparecem só quando billing_type=CREDIT_CARD.",
+  "rca_of_the_issue": "N/A — nenhum bug funcional. Todas as 26 features/testes do review_request passaram."
+}

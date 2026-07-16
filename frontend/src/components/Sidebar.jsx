@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Calendar, FileText, ClipboardList,
   Wallet, Sparkles, Settings, LogOut, Sun, Moon, ChevronsLeft,
   Stethoscope, ChevronsRight, MessageSquare, Briefcase, Building2,
-  UserCog, FileSignature,
+  UserCog, FileSignature, CreditCard,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -22,6 +22,7 @@ const NAV = [
   { to: "/mensagens", icon: MessageSquare, label: "Mensagens" },
   { to: "/assistente-ia", icon: Sparkles, label: "Assistente IA", hideRoles: ["recepcao"] },
   { to: "/equipe", icon: UserCog, label: "Equipe", adminOnly: true },
+  { to: "/minha-assinatura", icon: CreditCard, label: "Assinatura", adminOnly: true },
   { to: "/minha-clinica", icon: Building2, label: "Minha Clínica", adminOnly: true },
 ];
 

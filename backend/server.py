@@ -854,6 +854,8 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
 # ============================================================
 @api_router.post("/ai/chat")
 async def ai_chat(data: AIChatIn, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    await require_feature("ai", user)
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=500, detail="Chave LLM não configurada")
     session_id = data.session_id or f"sess_{user['user_id']}_{uuid.uuid4().hex[:8]}"
@@ -2555,6 +2557,7 @@ async def get_document(document_id: str, user: dict = Depends(get_current_user))
 async def create_document(data: SignedDocumentIn, request: Request, user: dict = Depends(get_current_user)):
     """Create a document from a template — auto-fills variables. Status = 'rascunho'."""
     forbid_recepcao_clinical(user)
+    await require_feature("documents", user)
     template = await db.document_templates.find_one(
         {"template_id": data.template_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
     )
@@ -2875,6 +2878,385 @@ async def doc_audit(document_id: str, user: dict = Depends(get_current_user)):
 
 
 # ============================================================
+# Subscriptions (Asaas) — Fase 2.4A
+# ============================================================
+ASAAS_BASE_URL = os.environ.get("ASAAS_BASE_URL", "https://api-sandbox.asaas.com/v3")
+ASAAS_API_KEY = os.environ.get("ASAAS_API_KEY", "")
+ASAAS_WEBHOOK_TOKEN = os.environ.get("ASAAS_WEBHOOK_TOKEN", "")
+
+# Plan catalog (persisted on startup)
+PLAN_CATALOG = [
+    {"plan_key": "starter",      "name": "Starter",      "price": 59.90,  "annual_price": 574.80,  "description": "Ideal para começar",
+     "features": {"max_professionals": 1,    "max_patients": 200,  "ai": False, "whatsapp": False, "documents": False, "advanced_reports": False, "audit_logs": False}},
+    {"plan_key": "professional", "name": "Professional", "price": 99.90,  "annual_price": 958.80,  "description": "Para clínicas em crescimento",
+     "features": {"max_professionals": 5,    "max_patients": None, "ai": True,  "whatsapp": False, "documents": True,  "advanced_reports": False, "audit_logs": False}},
+    {"plan_key": "premium",      "name": "Premium",      "price": 149.90, "annual_price": 1438.80, "description": "Recursos completos + WhatsApp",
+     "features": {"max_professionals": None, "max_patients": None, "ai": True,  "whatsapp": True,  "documents": True,  "advanced_reports": True,  "audit_logs": True}},
+]
+
+PLAN_FEATURES = {p["plan_key"]: p["features"] for p in PLAN_CATALOG}
+PLAN_PRICE_MAP = {p["plan_key"]: {"monthly": p["price"], "yearly": p["annual_price"]} for p in PLAN_CATALOG}
+
+
+async def seed_plans():
+    for p in PLAN_CATALOG:
+        await db.plans.update_one(
+            {"plan_key": p["plan_key"]},
+            {"$set": {**p, "active": True, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+
+
+async def ensure_trial_subscription(clinic_id: str, user_id: str):
+    """Ensure the clinic has at least a trial subscription (7d)."""
+    existing = await db.subscriptions.find_one({"clinic_id": clinic_id})
+    if existing:
+        return existing
+    now = datetime.now(timezone.utc)
+    doc = {
+        "subscription_id": f"sub_{uuid.uuid4().hex[:12]}",
+        "clinic_id": clinic_id,
+        "plan_key": "professional",   # trial concede acesso do Professional
+        "billing_cycle": "monthly",
+        "status": "trial",
+        "started_at": now.isoformat(),
+        "trial_ends_at": (now + timedelta(days=7)).isoformat(),
+        "read_only_until": (now + timedelta(days=10)).isoformat(),
+        "gateway_subscription_id": None,
+        "gateway_customer_id": None,
+        "value": 0.0,
+        "cancelled_at": None,
+        "created_by": user_id,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    }
+    await db.subscriptions.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+def _asaas_headers():
+    return {
+        "access_token": ASAAS_API_KEY,
+        "Content-Type": "application/json",
+        "User-Agent": "ProClinic/1.0 (FastAPI)",
+    }
+
+
+async def asaas_request(method: str, path: str, json: Optional[dict] = None, params: Optional[dict] = None):
+    if not ASAAS_API_KEY:
+        raise HTTPException(status_code=500, detail="ASAAS_API_KEY não configurada")
+    url = f"{ASAAS_BASE_URL}{path}"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.request(method, url, headers=_asaas_headers(), json=json, params=params)
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text
+        logger.warning("Asaas %s %s → %s %s", method, path, resp.status_code, detail)
+        raise HTTPException(status_code=502, detail={"gateway_status": resp.status_code, "gateway_error": detail})
+    return resp.json()
+
+
+# ---------- helpers ----------
+def _sub_status_effective(sub: Dict[str, Any]) -> str:
+    """Compute effective status based on trial/read_only deadlines."""
+    status = sub.get("status")
+    now = datetime.now(timezone.utc)
+    if status == "trial":
+        try:
+            trial_end = datetime.fromisoformat(sub["trial_ends_at"].replace("Z", "+00:00"))
+            if now > trial_end:
+                # inside grace read-only window?
+                ro_until = datetime.fromisoformat(sub.get("read_only_until", "").replace("Z", "+00:00")) if sub.get("read_only_until") else None
+                if ro_until and now < ro_until:
+                    return "read_only"
+                return "expired"
+        except Exception:
+            return status
+    return status
+
+
+async def get_clinic_subscription(clinic_id: str) -> Dict[str, Any]:
+    sub = await db.subscriptions.find_one({"clinic_id": clinic_id}, {"_id": 0})
+    return sub or {}
+
+
+def _plan_allows(plan_key: Optional[str], feature: str) -> bool:
+    return bool(PLAN_FEATURES.get(plan_key or "starter", {}).get(feature))
+
+
+async def require_feature(feature: str, user: dict):
+    sub = await get_clinic_subscription(user["clinic_id"])
+    if not sub:
+        raise HTTPException(status_code=402, detail="Assinatura necessária")
+    effective = _sub_status_effective(sub)
+    if effective in {"expired", "cancelled"}:
+        raise HTTPException(status_code=402, detail={"code": "subscription_required", "message": "Assinatura expirada — reative para acessar este recurso"})
+    if not _plan_allows(sub.get("plan_key"), feature):
+        raise HTTPException(status_code=403, detail={"code": "plan_upgrade_required", "message": f"Recurso '{feature}' não incluso no seu plano"})
+
+
+# ---------- Public endpoints ----------
+@api_router.get("/plans")
+async def list_plans():
+    docs = await db.plans.find({"active": True}, {"_id": 0}).to_list(20)
+    return docs
+
+
+@api_router.get("/subscriptions/me")
+async def my_subscription(user: dict = Depends(get_current_user)):
+    sub = await get_clinic_subscription(user["clinic_id"])
+    if not sub:
+        return None
+    plan = await db.plans.find_one({"plan_key": sub.get("plan_key")}, {"_id": 0})
+    days_left = None
+    if sub.get("status") == "trial" and sub.get("trial_ends_at"):
+        try:
+            d = datetime.fromisoformat(sub["trial_ends_at"].replace("Z", "+00:00")) - datetime.now(timezone.utc)
+            days_left = max(0, d.days + (1 if d.seconds > 0 else 0))
+        except Exception:
+            pass
+    return {
+        **sub,
+        "plan": plan,
+        "effective_status": _sub_status_effective(sub),
+        "trial_days_left": days_left,
+        "features": PLAN_FEATURES.get(sub.get("plan_key") or "starter", {}),
+    }
+
+
+class CheckoutIn(BaseModel):
+    plan_key: Literal["starter", "professional", "premium"]
+    billing_cycle: Literal["monthly", "yearly"] = "monthly"
+    billing_type: Literal["PIX", "BOLETO", "CREDIT_CARD"] = "PIX"
+    # customer info (used only if we don't have an Asaas customer yet)
+    cpf_cnpj: Optional[str] = None
+    holder_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    # credit card (when billing_type == CREDIT_CARD)
+    card_number: Optional[str] = None
+    card_holder: Optional[str] = None
+    card_expiry_month: Optional[str] = None
+    card_expiry_year: Optional[str] = None
+    card_ccv: Optional[str] = None
+
+
+@api_router.post("/subscriptions/checkout")
+async def checkout(payload: CheckoutIn, request: Request, user: dict = Depends(get_current_user)):
+    """Create/upsert an Asaas customer + subscription and persist locally."""
+    require_admin(user)
+    clinic = await db.clinics.find_one({"clinic_id": user["clinic_id"]}, {"_id": 0}) or {}
+    sub = await get_clinic_subscription(user["clinic_id"])
+    # 1) ensure customer
+    customer_id = (sub or {}).get("gateway_customer_id")
+    if not customer_id:
+        cpf = (payload.cpf_cnpj or clinic.get("cnpj") or "").replace(".", "").replace("/", "").replace("-", "")
+        if not cpf:
+            raise HTTPException(status_code=400, detail="CPF/CNPJ é obrigatório")
+        cust_body = {
+            "name": payload.holder_name or clinic.get("name") or user.get("name"),
+            "cpfCnpj": cpf,
+            "email": payload.email or user.get("email"),
+            "mobilePhone": (payload.phone or clinic.get("phone") or "").replace("(", "").replace(")", "").replace("-", "").replace(" ", ""),
+            "externalReference": user["clinic_id"],
+        }
+        cust = await asaas_request("POST", "/customers", json=cust_body)
+        customer_id = cust["id"]
+    # 2) price
+    price = PLAN_PRICE_MAP[payload.plan_key][payload.billing_cycle]
+    cycle = "YEARLY" if payload.billing_cycle == "yearly" else "MONTHLY"
+    # 3) subscription
+    next_due = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+    body = {
+        "customer": customer_id,
+        "billingType": payload.billing_type,
+        "value": price,
+        "nextDueDate": next_due,
+        "cycle": cycle,
+        "description": f"ProClinic {payload.plan_key.capitalize()} ({payload.billing_cycle})",
+        "externalReference": user["clinic_id"],
+    }
+    if payload.billing_type == "CREDIT_CARD":
+        if not (payload.card_number and payload.card_holder and payload.card_expiry_month and payload.card_expiry_year and payload.card_ccv):
+            raise HTTPException(status_code=400, detail="Dados do cartão incompletos")
+        body["creditCard"] = {
+            "holderName": payload.card_holder,
+            "number": payload.card_number.replace(" ", ""),
+            "expiryMonth": payload.card_expiry_month,
+            "expiryYear": payload.card_expiry_year,
+            "ccv": payload.card_ccv,
+        }
+        body["creditCardHolderInfo"] = {
+            "name": payload.card_holder,
+            "email": payload.email or user.get("email"),
+            "cpfCnpj": (payload.cpf_cnpj or "").replace(".", "").replace("-", ""),
+            "postalCode": clinic.get("postal_code", "00000000"),
+            "addressNumber": clinic.get("address_number", "1"),
+            "phone": (payload.phone or "1100000000").replace(" ", ""),
+        }
+        body["remoteIp"] = request.client.host if request.client else "127.0.0.1"
+
+    result = await asaas_request("POST", "/subscriptions", json=body)
+    # 4) persist locally
+    now = datetime.now(timezone.utc)
+    upd = {
+        "clinic_id": user["clinic_id"],
+        "plan_key": payload.plan_key,
+        "billing_cycle": payload.billing_cycle,
+        "billing_type": payload.billing_type,
+        "value": price,
+        "status": "pending",
+        "gateway_subscription_id": result.get("id"),
+        "gateway_customer_id": customer_id,
+        "next_billing_date": result.get("nextDueDate"),
+        "updated_at": now.isoformat(),
+    }
+    if sub:
+        await db.subscriptions.update_one({"clinic_id": user["clinic_id"]}, {"$set": upd})
+    else:
+        upd["subscription_id"] = f"sub_{uuid.uuid4().hex[:12]}"
+        upd["started_at"] = now.isoformat()
+        upd["created_at"] = now.isoformat()
+        await db.subscriptions.insert_one(upd)
+    return {"ok": True, "gateway_subscription_id": result.get("id"), "status": "pending"}
+
+
+@api_router.post("/subscriptions/cancel")
+async def cancel_subscription(user: dict = Depends(get_current_user)):
+    require_admin(user)
+    sub = await get_clinic_subscription(user["clinic_id"])
+    if not sub or not sub.get("gateway_subscription_id"):
+        raise HTTPException(status_code=404, detail="Assinatura não encontrada")
+    await asaas_request("DELETE", f"/subscriptions/{sub['gateway_subscription_id']}")
+    await db.subscriptions.update_one(
+        {"clinic_id": user["clinic_id"]},
+        {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+@api_router.post("/subscriptions/change-plan")
+async def change_plan(payload: Dict[str, Any], user: dict = Depends(get_current_user)):
+    require_admin(user)
+    new_plan = payload.get("plan_key")
+    cycle = payload.get("billing_cycle", "monthly")
+    if new_plan not in PLAN_FEATURES:
+        raise HTTPException(status_code=400, detail="Plano inválido")
+    sub = await get_clinic_subscription(user["clinic_id"])
+    if not sub or not sub.get("gateway_subscription_id"):
+        raise HTTPException(status_code=404, detail="Assinatura não encontrada")
+    new_value = PLAN_PRICE_MAP[new_plan][cycle]
+    await asaas_request(
+        "PUT",
+        f"/subscriptions/{sub['gateway_subscription_id']}",
+        json={"value": new_value, "cycle": "YEARLY" if cycle == "yearly" else "MONTHLY", "updatePendingPayments": True},
+    )
+    await db.subscriptions.update_one(
+        {"clinic_id": user["clinic_id"]},
+        {"$set": {"plan_key": new_plan, "billing_cycle": cycle, "value": new_value,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "plan_key": new_plan, "value": new_value}
+
+
+@api_router.get("/subscriptions/payments")
+async def list_subscription_payments(user: dict = Depends(get_current_user)):
+    sub = await get_clinic_subscription(user["clinic_id"])
+    if not sub:
+        return []
+    docs = await db.payments.find({"clinic_id": user["clinic_id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return docs
+
+
+# ---------- Webhook ----------
+@api_router.post("/webhooks/asaas")
+async def asaas_webhook(request: Request, asaas_access_token: str = Header(default="", alias="asaas-access-token")):
+    if not ASAAS_WEBHOOK_TOKEN or asaas_access_token != ASAAS_WEBHOOK_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid webhook token")
+    body = await request.json()
+    event_id = body.get("id") or body.get("event", "") + "_" + str(datetime.now(timezone.utc).timestamp())
+    # idempotency
+    if await db.webhook_events.find_one({"event_id": event_id}):
+        return {"ok": True, "duplicate": True}
+    await db.webhook_events.insert_one({
+        "event_id": event_id,
+        "event": body.get("event"),
+        "payload": body,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+    })
+    event = body.get("event", "")
+    payment = body.get("payment") or {}
+    subscription_ref = payment.get("subscription")
+    external_ref = payment.get("externalReference")
+    clinic_id = external_ref
+
+    if not clinic_id and subscription_ref:
+        s = await db.subscriptions.find_one({"gateway_subscription_id": subscription_ref})
+        clinic_id = s and s.get("clinic_id")
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    if event in {"PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"} and clinic_id:
+        await db.subscriptions.update_one(
+            {"clinic_id": clinic_id},
+            {"$set": {"status": "active", "activated_at": now, "updated_at": now,
+                      "last_payment_at": now, "next_billing_date": payment.get("nextDueDate")}},
+        )
+        await db.payments.insert_one({
+            "payment_id": f"pay_{uuid.uuid4().hex[:12]}",
+            "clinic_id": clinic_id,
+            "gateway_payment_id": payment.get("id"),
+            "gateway_subscription_id": subscription_ref,
+            "amount": payment.get("value"),
+            "payment_method": payment.get("billingType"),
+            "status": "paid",
+            "paid_at": payment.get("paymentDate") or now,
+            "created_at": now,
+        })
+    elif event == "PAYMENT_OVERDUE" and clinic_id:
+        await db.subscriptions.update_one(
+            {"clinic_id": clinic_id},
+            {"$set": {"status": "past_due", "updated_at": now}},
+        )
+    elif event == "PAYMENT_DELETED" and clinic_id:
+        # do nothing more than logging
+        pass
+    elif event in {"SUBSCRIPTION_UPDATED", "SUBSCRIPTION_INACTIVATED", "SUBSCRIPTION_DELETED"} and clinic_id:
+        if event in {"SUBSCRIPTION_INACTIVATED", "SUBSCRIPTION_DELETED"}:
+            await db.subscriptions.update_one(
+                {"clinic_id": clinic_id},
+                {"$set": {"status": "cancelled", "cancelled_at": now, "updated_at": now}},
+            )
+    return {"ok": True}
+
+
+# ---------- Admin financial dashboard (super-admin/tenant-wide) ----------
+@api_router.get("/admin/finance/summary")
+async def admin_finance_summary(user: dict = Depends(get_current_user)):
+    """MRR/ARR, active count etc. — Fase 2.4A básico."""
+    require_admin(user)
+    subs = await db.subscriptions.find({}, {"_id": 0}).to_list(2000)
+    active = [s for s in subs if s.get("status") == "active"]
+    trial = [s for s in subs if s.get("status") == "trial"]
+    past_due = [s for s in subs if s.get("status") == "past_due"]
+    cancelled = [s for s in subs if s.get("status") == "cancelled"]
+    mrr = sum(float(s.get("value") or 0) if s.get("billing_cycle") == "monthly" else float(s.get("value") or 0) / 12 for s in active)
+    arr = mrr * 12
+    return {
+        "active": len(active),
+        "trial": len(trial),
+        "past_due": len(past_due),
+        "cancelled": len(cancelled),
+        "mrr": round(mrr, 2),
+        "arr": round(arr, 2),
+        "conversion_rate": round(len(active) / max(1, len(active) + len(trial)) * 100, 1),
+    }
+
+
+# ============================================================
 # App setup
 # ============================================================
 app.include_router(api_router)
@@ -2892,6 +3274,11 @@ app.add_middleware(
 async def on_startup():
     init_storage()
     await seed_data()
+    await seed_plans()
+    # ensure trial for the demo clinic (idempotent)
+    admin = await db.users.find_one({"email": os.environ.get("ADMIN_EMAIL", "admin@proclinic.com")}, {"_id": 0})
+    if admin:
+        await ensure_trial_subscription(admin["clinic_id"], admin["user_id"])
 
 
 @app.on_event("shutdown")
