@@ -1,0 +1,43 @@
+{
+  "summary": "RETEST Phase 2.4B after iteration_9 fixes — ALL green. 24/24 backend pytest pass (1 skipped by design). The 3 previously failing tests (test_invoices_endpoint_returns_payment_with_url, test_invoice_url_returns_pdf, test_email_log_exists_after_webhook) now PASS. Manual curl confirms GET /api/invoices returns non-empty list with valid invoice_url; GET invoice_url returns 200 application/pdf 2670 bytes (%PDF-1.4). POST /api/coupons with value=150 kind=percent returns 422 (validator). POST with value=-5 also 422 (Field(ge=0)). Frontend route guard for /super-admin verified for admin, bella, ana (all redirected to /dashboard) and super_admin retains access. Admin's /minha-assinatura shows both invoice-download-<id> links with valid PDF hrefs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "webhook — email_logs verification", "issue": "Still no admin/super_admin endpoint to inspect db.email_logs. Recommendation carried over from iteration_9 for observability; not blocking."},
+      {"endpoint": "POST /api/coupons validate", "issue": "GET /api/coupons/validate/{code} still returns OK for any plan when applies_to=[] — documented behaviour, not a bug, but worth documenting explicitly in the OpenAPI schema."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "SuperAdmin.jsx / Radix Dialog", "issue": "Radix DialogContent still warns 'Missing Description or aria-describedby={undefined}' (a11y). Not blocking.", "selector": "[data-testid=\"coupon-form-dialog\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_4b_superadmin.py",
+    "/app/test_reports/pytest/phase2_4b_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL/MINOR: Add DialogDescription to coupon-form-dialog for a11y (silences Radix warning).",
+    "OPTIONAL/OBSERVABILITY: Add GET /api/super-admin/email-logs endpoint."
+  ],
+  "critical_code_review_comments": [
+    "server.py:3606 — locale-swap now correctly applied only to `amount_br` (pre-formatted number), not the whole HTML template. Same fix applied to send_email_payment_confirmed (line 3568). Root cause resolved cleanly.",
+    "CouponIn (server.py:3323) — Field(ge=0) prevents negative values, and field_validator enforces value<=100 when kind='percent'. Both server-side checks return proper 422 responses.",
+    "App.js:82 — <Route path='super-admin'> now correctly wrapped in <ProtectedRoute roles={['super_admin']}>. Route guard verified for 4 roles via browser automation.",
+    "server.py file size is still ~3737 lines; recommendation from iteration_8/9 to split into routers/services still stands. Not a 2.4B blocker."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (24/24 pass, 1 skipped by design)", "frontend": "100% (all 4 route guard scenarios pass, invoice-download links render correctly on /minha-assinatura)"},
+  "test_credentials": "superadmin@proclinic.com/super123, admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, ana.recep@proclinic.com/ana123 — all OK. Webhook token: whsec_proclinic_a8f3d9e2c1b47506a92e3f81d5c6b0a4.",
+  "seed_data_creation": "Test file reused; cleanup pass leaves DB clean of TEST*/TESTLNCH*/TESTEXP*/TESTMAX*/TESTCK* coupons. Test also verified one leftover invoice PDF (pay_739f7e4fad08, pay_8223a603c71a) remain on disk under /clinic_3f6961ea2f1e/invoices/ — valid PDFs served with signed URLs.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 2.4B is now COMPLETE. All previously failing tests pass. Only low-priority a11y warnings remain (Radix DialogContent aria-describedby). No functional gaps left. Backend/frontend/integration all verified end-to-end.",
+  "rca_of_the_issue": {
+    "invoice_pdf_fix_verified": "The .replace() chain now targets only the pre-formatted amount string (amount_br), leaving the HTML/CSS intact. xhtml2pdf now emits a valid PDF (2670 bytes, %PDF-1.4). Confirmed via curl on public URL: HTTP:200 type:application/pdf size:2670.",
+    "super_admin_route_guard_fix_verified": "<ProtectedRoute roles={['super_admin']}> wraps the <SuperAdmin/> element in App.js:82. Browser automation confirmed admin/bella/ana are redirected to /dashboard, while super_admin retains access.",
+    "coupon_validator_fix_verified": "CouponIn.value has Field(ge=0) AND field_validator('value') that rejects percent>100. Curl tests: value=150 kind=percent → 422 with 'Percentual não pode ser maior que 100'; value=-5 → 422 with 'Input should be greater than or equal to 0'; value=500 kind=fixed → 200 OK."
+  }
+}

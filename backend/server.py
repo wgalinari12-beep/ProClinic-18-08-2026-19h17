@@ -23,7 +23,7 @@ from typing import List, Optional, Literal, Any, Dict
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query, UploadFile, File, Header
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, field_validator
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
@@ -3323,12 +3323,19 @@ def require_super_admin(user: dict):
 class CouponIn(BaseModel):
     code: str
     kind: Literal["percent", "fixed"] = "percent"
-    value: float                                       # percent (0-100) OU R$
+    value: float = Field(ge=0)                              # percent (0-100) OU R$
     applies_to: List[Literal["starter", "professional", "premium"]] = []
     first_payment_only: bool = True
-    max_uses: Optional[int] = None                     # None = ilimitado
-    valid_until: Optional[str] = None                  # ISO date
+    max_uses: Optional[int] = None                          # None = ilimitado
+    valid_until: Optional[str] = None                       # ISO date
     active: bool = True
+
+    @field_validator("value")
+    @classmethod
+    def _validate_percent_range(cls, v, info):
+        if info.data.get("kind") == "percent" and v > 100:
+            raise ValueError("Percentual não pode ser maior que 100")
+        return v
 
 
 @api_router.get("/coupons")
@@ -3563,12 +3570,13 @@ async def send_email_payment_confirmed(clinic_id: str, payment: Dict[str, Any], 
     if not admin:
         return
     amount = float(payment.get("value") or payment.get("amount") or 0)
+    amount_br = f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     key = f"payment_confirmed:{payment.get('id') or payment.get('payment_id')}"
     frontend = os.environ.get("FRONTEND_URL", "")
     html = _email_shell(
         "Pagamento confirmado ✓",
-        f"""<p>Recebemos seu pagamento de <strong>R$ {amount:,.2f}</strong>. Seu acesso ao ProClinic está ativo.</p>
-        <p>Uma fatura em PDF segue anexa a este email para seus registros.</p>""".replace(",", "X").replace(".", ",").replace("X", "."),
+        f"""<p>Recebemos seu pagamento de <strong>R$ {amount_br}</strong>. Seu acesso ao ProClinic está ativo.</p>
+        <p>Uma fatura em PDF segue anexa a este email para seus registros.</p>""",
         "Ver minha assinatura", frontend + "/minha-assinatura",
     )
     import base64
@@ -3597,7 +3605,9 @@ async def send_email_payment_overdue(clinic_id: str):
 # ---------- Invoice PDF ----------
 def _build_invoice_pdf(payment: Dict[str, Any], clinic: Dict[str, Any], sub: Dict[str, Any]) -> bytes:
     amount = float(payment.get("value") or payment.get("amount") or 0)
+    amount_br = f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     date = payment.get("paymentDate") or payment.get("paid_at") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cycle_label = "Anual" if sub.get("billing_cycle") == "yearly" else "Mensal"
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
       @page {{ size: A4; margin: 20mm; }}
       body {{ font-family: Helvetica, Arial, sans-serif; color: #1a1a1a; }}
@@ -3619,15 +3629,14 @@ def _build_invoice_pdf(payment: Dict[str, Any], clinic: Dict[str, Any], sub: Dic
         <thead><tr><th>Descrição</th><th style="text-align:right;">Valor</th></tr></thead>
         <tbody>
           <tr>
-            <td>ProClinic — Plano {(sub.get('plan_key') or '').capitalize()} ({sub.get('billing_cycle','monthly') == 'yearly' and 'Anual' or 'Mensal'})</td>
-            <td style="text-align:right;">R$ {amount:,.2f}</td>
+            <td>ProClinic — Plano {(sub.get('plan_key') or '').capitalize()} ({cycle_label})</td>
+            <td style="text-align:right;">R$ {amount_br}</td>
           </tr>
         </tbody>
       </table>
-      <div class="total">Total pago: R$ {amount:,.2f}</div>
+      <div class="total">Total pago: R$ {amount_br}</div>
       <div class="footer">Este documento é uma confirmação de pagamento. Para nota fiscal formal, entre em contato.</div>
-    </body></html>""".replace(",", "X").replace(".", ",").replace("X", ".")
-    # NOTE: number formatting is intentionally basic; xhtml2pdf handles UTF-8 well.
+    </body></html>"""
     buf = io.BytesIO()
     pisa.CreatePDF(src=html, dest=buf, encoding="utf-8")
     return buf.getvalue()

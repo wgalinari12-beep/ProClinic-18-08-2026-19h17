@@ -79,7 +79,7 @@ function AppRouter() {
         <Route path="planos" element={<Planos />} />
         <Route path="checkout/:planKey" element={<Checkout />} />
         <Route path="minha-assinatura" element={<MinhaAssinatura />} />
-        <Route path="super-admin" element={<SuperAdmin />} />
+        <Route path="super-admin" element={<ProtectedRoute roles={["super_admin"]}><SuperAdmin /></ProtectedRoute>} />
         <Route path="minha-clinica" element={<MinhaClinica />} />
         <Route path="equipe" element={<Equipe />} />
         <Route path="configuracoes" element={<Configuracoes />} />
