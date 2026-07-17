@@ -1,0 +1,59 @@
+{
+  "summary": "Phase 2.4B (super-admin dashboard, coupons CRUD, webhook invoice PDF + Resend emails) — 21/24 backend pytest pass. Frontend super-admin flow mostly OK. TWO critical bugs found: (1) invoice PDF generation is broken by a locale replace that mangles CSS, so /invoices always returns [] and MinhaAssinatura never shows an invoice link; (2) /super-admin frontend route lacks a roles=['super_admin'] guard on ProtectedRoute — admin/profissional/recepção can navigate to /super-admin (backend blocks the APIs with 403 so the page just errors, but the requirement says they should be redirected to /dashboard).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/webhooks/asaas (invoice PDF gen)", "issue": "_build_invoice_pdf() in server.py:3629 applies `.replace(',', 'X').replace('.', ',').replace('X', '.')` to the ENTIRE HTML template. That destroys CSS declarations like `font-family: Helvetica, Arial, sans-serif` (becomes `Helvetica. Arial. sans-serif`), xhtml2pdf raises `Declaration group closing '}' not found`, PDF gen fails silently, invoice_url stays None, payment is stored without invoice_url and /api/invoices returns []. Confirmed in backend.err.log: 'Invoice PDF gen failed: Declaration group closing \\'}\\' not found:: (\\'{ font-family: Helvetica\\', \\'. Arial. sans-serif;\\')'. Fix: format the amount string BEFORE building the HTML (e.g., `amount_br = f\"{amount:,.2f}\".replace(',', 'X').replace('.', ',').replace('X', '.')`) and inject it, don't swap on the full html.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "send_email_payment_confirmed", "issue": "Same locale-swap pattern is applied to the email body html (line ~3571). Currently harmless because the body has no periods/commas outside the amount, but is fragile — same fix approach recommended."},
+      {"endpoint": "POST /api/coupons + PUT /api/coupons/{id}", "issue": "CouponIn.value accepts negative numbers or >100 percent. No range validation. A super_admin could create a `percent` coupon with value=150 → users get negative prices (currently clamped by max(0.0, …) in _apply_coupon, so it silently becomes free). Consider Field(ge=0, le=100 if kind=='percent')."},
+      {"endpoint": "POST /api/coupons", "issue": "There is no server-side check that `kind='percent'` implies value<=100 nor that `applies_to` is non-empty when the intent is to restrict."},
+      {"endpoint": "GET /api/coupons/validate/{code}", "issue": "When `applies_to` is EMPTY (i.e., no plan restriction), current code returns OK for any plan — that's fine — but if `applies_to=[]` was meant to mean 'none', current behaviour is 'all'. Document this or reject empty list at create-time."},
+      {"endpoint": "webhook — email_logs verification", "issue": "There is no admin/super_admin endpoint to inspect email_logs — makes it impossible to verify from HTTP whether the confirmation email was queued. Consider `GET /api/super-admin/email-logs?clinic_id=…` for observability. (Backend logs confirm the flow ran with status='failed' due to Resend sandbox restriction, which is expected.)"}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "App.js — <Route path='super-admin'>", "issue": "Missing role guard: current code is `<Route path=\"super-admin\" element={<SuperAdmin />} />`. The requirement says admin/profissional/recepção visiting /super-admin should be redirected to /dashboard via ProtectedRoute roles=['super_admin']. Currently they land on /super-admin, the page mounts, API calls 403, and only a toast 'Erro ao carregar dashboard' shows. Bella and Ana get the SAME broken view. Fix: wrap the element in `<ProtectedRoute roles={['super_admin']}><SuperAdmin/></ProtectedRoute>` (or add a top-level guard in the layout Route).", "selector": "route:/super-admin", "priority": "HIGH"},
+      {"component": "SuperAdmin.jsx / Dialog", "issue": "Radix DialogContent warns `Missing Description or aria-describedby={undefined}` — a11y warning, not blocking.", "selector": "[data-testid=\"coupon-form-dialog\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Coupon UI creation", "issue": "In manual UI test the toast success appeared but `coupon-row-<CODE>` did not immediately show; row appears after a manual refresh. Likely a `load()` timing issue after the POST resolves. Non-blocking (backend CRUD 100% OK), but consider `await` chaining or setting the newly created coupon into local state directly.", "affected_selectors": ["[data-testid=\"coupons-table\"]", "[data-testid=\"coupon-row-*\"]"]},
+      {"flow": "MinhaAssinatura invoice link", "issue": "`invoice-download-<id>` never renders because backend /api/invoices returns [] (due to the PDF-gen bug above). Once the PDF bug is fixed, the frontend link should render automatically — no frontend change needed.", "affected_selectors": ["[data-testid=\"invoice-download-*\"]"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_4b_superadmin.py",
+    "/app/test_reports/pytest/phase2_4b_results.xml"
+  ],
+  "action_items": [
+    "CRITICAL: Fix _build_invoice_pdf() locale replacement — apply comma/dot swap only to the formatted amount string, not the whole HTML template. Same for send_email_payment_confirmed body. Verify with `curl /api/invoices` after webhook returns 200 → must include invoice_url matching /api/files/…?sig=…, and GETting that URL must return application/pdf.",
+    "CRITICAL: Add roles guard on /super-admin frontend route in /app/frontend/src/App.js — wrap <SuperAdmin/> with <ProtectedRoute roles={['super_admin']}> so admin/profissional/recepção are redirected to /dashboard when trying to open /super-admin directly.",
+    "MINOR: Add Pydantic Field validators on CouponIn (value >= 0; if kind=='percent' then value <= 100; applies_to length ≥ 1 or documented meaning).",
+    "MINOR: After the PDF bug is fixed, retest the whole webhook→email→invoice flow end-to-end (already covered by test_phase2_4b_superadmin.py — 3 currently failing tests will flip to green).",
+    "MINOR: Add aria-describedby / DialogDescription to coupon-form-dialog to silence Radix warnings and improve a11y.",
+    "OBSERVABILITY: Consider a super-admin endpoint to list db.email_logs entries (currently only visible via Mongo shell)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:3629 — the `.replace(',', 'X').replace('.', ',').replace('X', '.')` chain is applied to the ENTIRE HTML template (including CSS) rather than to a pre-formatted number. This is the root cause of the invoice PDF failure. The comment above it even acknowledges 'number formatting is intentionally basic; xhtml2pdf handles UTF-8 well' — implying the author didn't notice the CSS also gets mangled.",
+    "server.py:3728 lines total — the Phase 2.4B block adds ~470 lines (3308-3728). Strong candidate to be moved into routers/super_admin.py + services/emails.py + services/invoice_pdf.py. Same recommendation carried from iteration_8.",
+    "server.py:3660 trial_check_loop only sends the 24h notice window (20-28h). No 3-day/7-day reminders. Not required by 2.4B but noted.",
+    "SuperAdmin.jsx createCoupon uses closure over `couponForm` state — the moment save is clicked, state MUST be flushed. In React 18 with concurrent mode, this is usually fine, but if the user types fast and clicks save before state settles the wrong value may be POSTed. Consider useRef mirror or read from a ref inside createCoupon.",
+    "ProtectedRoute.jsx line 19 is a big hard-coded array of paths to redirect super_admin away from — brittle; refactor to accept per-route metadata (e.g., every non-super-admin Route wraps in <ProtectedRoute roles=['admin','profissional','recepcao']> and /super-admin uses roles=['super_admin']).",
+    "app.py CORS uses allow_origins=['*'] with allow_credentials=True — this combination is invalid per CORS spec and modern browsers will silently drop credentials. Not a 2.4B issue but preexisting."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_4b_superadmin.py (NEW — 24 tests: 21 pass, 3 fail due to invoice PDF bug, 1 skipped by design when checkout state won't allow re-checkout)"
+  ],
+  "success_rate": {"backend": "87.5% (21/24 pass, 1 skipped)", "frontend": "80% (login redirects OK, sidebar RBAC OK, super_admin→/dashboard redirect OK; MISS: admin/profissional/recepção→/super-admin redirect NOT enforced; invoice link cannot be verified due to backend PDF bug)"},
+  "test_credentials": "superadmin@proclinic.com/super123, admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, ana.recep@proclinic.com/ana123 all OK. Webhook token: whsec_proclinic_a8f3d9e2c1b47506a92e3f81d5c6b0a4.",
+  "seed_data_creation": "Test file creates coupons with TEST*/TESTLNCH*/TESTEXP*/TESTMAX*/TESTCK* prefixes and deletes them in TestZZZCleanup. One UITST* coupon was left over from the browser UI test (super_admin can clean via UI or by re-running the pytest cleanup pass). Multiple pay_test_phase24b_* webhook_events remain in db (idempotent). No production data touched.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After fixes: (1) rerun `pytest backend/tests/test_phase2_4b_superadmin.py -v` — the 3 currently failing tests (test_invoices_endpoint_returns_payment_with_url, test_invoice_url_returns_pdf, test_email_log_exists_after_webhook) should all pass. (2) Redo the frontend browser test focusing on: admin visiting /super-admin should be redirected to /dashboard; bella and ana same; and MinhaAssinatura should now show an `invoice-download-*` link for the most recent payment. Coupon UI creation may need a slight `await load()` timing tweak — the row was missing in one UI run but backend POST succeeded (backend test proves the endpoint works). The suite is idempotent and auto-cleanup safe.",
+  "rca_of_the_issue": {
+    "invoice_pdf": "Reproduction: POST /api/webhooks/asaas with a valid PAYMENT_CONFIRMED body → response {ok:true}. Backend log shows 'Invoice PDF gen failed: Declaration group closing \\'}\\' not found:: (\\'{ font-family: Helvetica\\', \\'. Arial. sans-serif;\\')'. Cause: `_build_invoice_pdf` builds a full HTML with `<style>@page{…} body{ font-family: Helvetica, Arial, sans-serif; … }</style>` and then chains `.replace(',', 'X').replace('.', ',').replace('X', '.')` on that whole string. That's supposed to turn '99.90' into '99,90' but it also turns 'Helvetica, Arial, sans-serif' into 'Helvetica. Arial. sans-serif' — invalid CSS — and xhtml2pdf's pisa/cssParser bails on the malformed declaration group. Because the exception is caught in server.py:3243 and only logged as WARNING, the caller sets invoice_url=None; the payment row is written but /api/invoices filter `{invoice_url: {$exists: true, $ne: null}}` returns []. Mitigation: pre-format the amount into a helper variable and interpolate that variable — do NOT run replace on the whole HTML. Alternative: use babel or locale-aware formatting.",
+    "super_admin_route_guard": "Reproduction: login as admin@proclinic.com, then navigate directly to https://.../super-admin. Current URL stays at /super-admin (not redirected to /dashboard). The SuperAdmin component mounts, its api.get('/super-admin/summary') is 403-blocked by backend, and toast shows 'Erro ao carregar dashboard'. Cause: App.js declares `<Route path=\"super-admin\" element={<SuperAdmin />} />` inside a parent that only checks isAuthenticated — no roles filter. ProtectedRoute has a special-case for super_admin redirecting them AWAY from other paths, but there is NO symmetric guard sending non-super_admins AWAY from /super-admin. Mitigation: `<Route path=\"super-admin\" element={<ProtectedRoute roles={['super_admin']}><SuperAdmin /></ProtectedRoute>} />`."
+  }
+}

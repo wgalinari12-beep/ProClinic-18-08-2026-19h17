@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Calendar, FileText, ClipboardList,
   Wallet, Sparkles, Settings, LogOut, Sun, Moon, ChevronsLeft,
   Stethoscope, ChevronsRight, MessageSquare, Briefcase, Building2,
-  UserCog, FileSignature, CreditCard,
+  UserCog, FileSignature, CreditCard, Crown,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -24,6 +24,7 @@ const NAV = [
   { to: "/equipe", icon: UserCog, label: "Equipe", adminOnly: true },
   { to: "/minha-assinatura", icon: CreditCard, label: "Assinatura", adminOnly: true },
   { to: "/minha-clinica", icon: Building2, label: "Minha Clínica", adminOnly: true },
+  { to: "/super-admin", icon: Crown, label: "Super Admin", roles: ["super_admin"] },
 ];
 
 export default function Sidebar({ collapsed, onToggle }) {
@@ -56,6 +57,9 @@ export default function Sidebar({ collapsed, onToggle }) {
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
         {NAV.filter((item) => {
           if (!user) return true;
+          // super_admin sees only super-admin item
+          if (user.role === "super_admin") return item.roles?.includes("super_admin");
+          if (item.roles?.includes("super_admin")) return false;
           if (item.adminOnly && user.role !== "admin") return false;
           if (item.roles && !item.roles.includes(user.role)) return false;
           if (item.hideRoles && item.hideRoles.includes(user.role)) return false;

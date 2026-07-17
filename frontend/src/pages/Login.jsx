@@ -27,17 +27,20 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (user) navigate(location.state?.from?.pathname || "/dashboard", { replace: true });
+    if (!user) return;
+    const dest = user.role === "super_admin" ? "/super-admin" : (location.state?.from?.pathname || "/dashboard");
+    navigate(dest, { replace: true });
   }, [user, navigate, location]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setBusy(true);
     try {
-      if (mode === "login") await login({ email: authMode === "email" ? email : null, cpf: authMode === "cpf" ? cpf : null, password });
-      else await register({ email, password, name, role });
+      const u = mode === "login"
+        ? await login({ email: authMode === "email" ? email : null, cpf: authMode === "cpf" ? cpf : null, password })
+        : await register({ email, password, name, role });
       toast.success(mode === "login" ? "Bem-vindo(a) de volta" : "Conta criada");
-      navigate("/dashboard", { replace: true });
+      navigate(u?.role === "super_admin" ? "/super-admin" : "/dashboard", { replace: true });
     } catch (err) {
       // Log raw error to console for diagnostics
       // eslint-disable-next-line no-console

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 import { Clock, AlertTriangle, CreditCard } from "lucide-react";
 
 /**
@@ -10,15 +11,17 @@ import { Clock, AlertTriangle, CreditCard } from "lucide-react";
 export default function TrialBanner() {
   const [sub, setSub] = useState(null);
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   useEffect(() => {
+    if (!user || user.role === "super_admin") return;
     (async () => {
       try {
         const { data } = await api.get("/subscriptions/me");
         setSub(data);
       } catch { /* ignore */ }
     })();
-  }, []);
+  }, [user]);
 
   if (!sub) return null;
   const effective = sub.effective_status || sub.status;

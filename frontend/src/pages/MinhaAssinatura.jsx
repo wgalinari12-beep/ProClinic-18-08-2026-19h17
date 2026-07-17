@@ -152,6 +152,7 @@ export default function MinhaAssinatura() {
                       <th className="px-4 py-2">Método</th>
                       <th className="px-4 py-2">Valor</th>
                       <th className="px-4 py-2">Status</th>
+                      <th className="px-4 py-2">Fatura</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -164,6 +165,15 @@ export default function MinhaAssinatura() {
                         <td className="px-4 py-3 font-mono">{moneyBR(p.amount)}</td>
                         <td className="px-4 py-3">
                           <Badge variant="outline" className="text-[10px] uppercase">{p.status}</Badge>
+                        </td>
+                        <td className="px-4 py-3">
+                          {p.invoice_url && (
+                            <a href={`${process.env.REACT_APP_BACKEND_URL}${p.invoice_url}`} target="_blank" rel="noreferrer"
+                              className="text-primary hover:underline text-xs inline-flex items-center gap-1"
+                              data-testid={`invoice-download-${p.payment_id}`}>
+                              Fatura PDF
+                            </a>
+                          )}
                         </td>
                       </tr>
                     ))}

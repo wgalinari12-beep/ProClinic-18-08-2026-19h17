@@ -7,12 +7,14 @@ import os
 import io
 import re
 import uuid
+import asyncio
 import logging
 import bcrypt
 import jwt
 import httpx
 import requests
 import qrcode
+import resend
 import markdown as md
 from xhtml2pdf import pisa
 from datetime import datetime, timezone, timedelta
@@ -2932,6 +2934,11 @@ async def ensure_trial_subscription(clinic_id: str, user_id: str):
     }
     await db.subscriptions.insert_one(doc)
     doc.pop("_id", None)
+    # fire welcome email (background — don't block)
+    try:
+        asyncio.create_task(send_email_trial_welcome(clinic_id))
+    except Exception as e:
+        logger.warning("welcome email schedule failed: %s", e)
     return doc
 
 
@@ -3031,6 +3038,7 @@ class CheckoutIn(BaseModel):
     plan_key: Literal["starter", "professional", "premium"]
     billing_cycle: Literal["monthly", "yearly"] = "monthly"
     billing_type: Literal["PIX", "BOLETO", "CREDIT_CARD"] = "PIX"
+    coupon_code: Optional[str] = None
     # customer info (used only if we don't have an Asaas customer yet)
     cpf_cnpj: Optional[str] = None
     holder_name: Optional[str] = None
@@ -3065,8 +3073,14 @@ async def checkout(payload: CheckoutIn, request: Request, user: dict = Depends(g
         }
         cust = await asaas_request("POST", "/customers", json=cust_body)
         customer_id = cust["id"]
-    # 2) price
+    # 2) price with coupon (first-payment discount applied via one-shot discount)
     price = PLAN_PRICE_MAP[payload.plan_key][payload.billing_cycle]
+    coupon = None
+    discounted_price = price
+    if payload.coupon_code:
+        coupon = await db.coupons.find_one({"code": payload.coupon_code.strip().upper(), "active": True}, {"_id": 0})
+        if coupon:
+            discounted_price = _apply_coupon(price, coupon)
     cycle = "YEARLY" if payload.billing_cycle == "yearly" else "MONTHLY"
     # 3) subscription
     next_due = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -3079,6 +3093,12 @@ async def checkout(payload: CheckoutIn, request: Request, user: dict = Depends(g
         "description": f"ProClinic {payload.plan_key.capitalize()} ({payload.billing_cycle})",
         "externalReference": user["clinic_id"],
     }
+    # First-payment coupon: apply a "discount" on the first payment via Asaas subscription discount block
+    if coupon and coupon.get("first_payment_only") and discounted_price < price:
+        body["discount"] = {"value": round(price - discounted_price, 2), "dueDateLimitDays": 30, "type": "FIXED"}
+    elif coupon and not coupon.get("first_payment_only"):
+        # Persistent discount: send a lower recurring value
+        body["value"] = discounted_price
     if payload.billing_type == "CREDIT_CARD":
         if not (payload.card_number and payload.card_holder and payload.card_expiry_month and payload.card_expiry_year and payload.card_ccv):
             raise HTTPException(status_code=400, detail="Dados do cartão incompletos")
@@ -3121,7 +3141,11 @@ async def checkout(payload: CheckoutIn, request: Request, user: dict = Depends(g
         upd["started_at"] = now.isoformat()
         upd["created_at"] = now.isoformat()
         await db.subscriptions.insert_one(upd)
-    return {"ok": True, "gateway_subscription_id": result.get("id"), "status": "pending"}
+    # increment coupon uses count
+    if coupon:
+        await db.coupons.update_one({"coupon_id": coupon["coupon_id"]}, {"$inc": {"uses_count": 1}})
+    return {"ok": True, "gateway_subscription_id": result.get("id"), "status": "pending",
+            "final_price": upd["value"], "coupon_applied": coupon["code"] if coupon else None}
 
 
 @api_router.post("/subscriptions/cancel")
@@ -3207,8 +3231,20 @@ async def asaas_webhook(request: Request, asaas_access_token: str = Header(defau
             {"$set": {"status": "active", "activated_at": now, "updated_at": now,
                       "last_payment_at": now, "next_billing_date": payment.get("nextDueDate")}},
         )
+        # Generate invoice PDF and persist
+        clinic = await db.clinics.find_one({"clinic_id": clinic_id}, {"_id": 0}) or {}
+        sub_doc = await db.subscriptions.find_one({"clinic_id": clinic_id}, {"_id": 0}) or {}
+        payment_id_local = f"pay_{uuid.uuid4().hex[:12]}"
+        invoice_url = None
+        try:
+            pdf_bytes = _build_invoice_pdf({**payment, "payment_id": payment_id_local}, clinic, sub_doc)
+            inv = await _persist_invoice_pdf(clinic_id, payment_id_local, pdf_bytes)
+            invoice_url = inv["url"]
+        except Exception as e:
+            logger.warning("Invoice PDF gen failed: %s", e)
+            pdf_bytes = None
         await db.payments.insert_one({
-            "payment_id": f"pay_{uuid.uuid4().hex[:12]}",
+            "payment_id": payment_id_local,
             "clinic_id": clinic_id,
             "gateway_payment_id": payment.get("id"),
             "gateway_subscription_id": subscription_ref,
@@ -3216,13 +3252,23 @@ async def asaas_webhook(request: Request, asaas_access_token: str = Header(defau
             "payment_method": payment.get("billingType"),
             "status": "paid",
             "paid_at": payment.get("paymentDate") or now,
+            "invoice_url": invoice_url,
             "created_at": now,
         })
+        # Send confirmation email
+        try:
+            await send_email_payment_confirmed(clinic_id, payment, pdf_bytes)
+        except Exception as e:
+            logger.warning("send_email_payment_confirmed failed: %s", e)
     elif event == "PAYMENT_OVERDUE" and clinic_id:
         await db.subscriptions.update_one(
             {"clinic_id": clinic_id},
             {"$set": {"status": "past_due", "updated_at": now}},
         )
+        try:
+            await send_email_payment_overdue(clinic_id)
+        except Exception as e:
+            logger.warning("send_email_payment_overdue failed: %s", e)
     elif event == "PAYMENT_DELETED" and clinic_id:
         # do nothing more than logging
         pass
@@ -3260,6 +3306,376 @@ async def admin_finance_summary(user: dict = Depends(get_current_user)):
 
 
 # ============================================================
+# Coupons + Super-admin + Emails + Invoices — Fase 2.4B
+# ============================================================
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+if RESEND_API_KEY:
+    resend.api_key = RESEND_API_KEY
+
+
+def require_super_admin(user: dict):
+    if user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Apenas super-admin")
+
+
+# ---------- Coupons ----------
+class CouponIn(BaseModel):
+    code: str
+    kind: Literal["percent", "fixed"] = "percent"
+    value: float                                       # percent (0-100) OU R$
+    applies_to: List[Literal["starter", "professional", "premium"]] = []
+    first_payment_only: bool = True
+    max_uses: Optional[int] = None                     # None = ilimitado
+    valid_until: Optional[str] = None                  # ISO date
+    active: bool = True
+
+
+@api_router.get("/coupons")
+async def list_coupons(user: dict = Depends(get_current_user)):
+    require_super_admin(user)
+    docs = await db.coupons.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return docs
+
+
+@api_router.post("/coupons")
+async def create_coupon(data: CouponIn, user: dict = Depends(get_current_user)):
+    require_super_admin(user)
+    code = data.code.strip().upper()
+    if await db.coupons.find_one({"code": code}):
+        raise HTTPException(status_code=400, detail="Cupom já existe")
+    doc = {
+        **data.model_dump(),
+        "coupon_id": f"cpn_{uuid.uuid4().hex[:10]}",
+        "code": code,
+        "uses_count": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": user["user_id"],
+    }
+    await db.coupons.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/coupons/{coupon_id}")
+async def update_coupon(coupon_id: str, data: CouponIn, user: dict = Depends(get_current_user)):
+    require_super_admin(user)
+    upd = data.model_dump()
+    upd["code"] = upd["code"].strip().upper()
+    res = await db.coupons.update_one({"coupon_id": coupon_id}, {"$set": upd})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Cupom não encontrado")
+    doc = await db.coupons.find_one({"coupon_id": coupon_id}, {"_id": 0})
+    return doc
+
+
+@api_router.delete("/coupons/{coupon_id}")
+async def delete_coupon(coupon_id: str, user: dict = Depends(get_current_user)):
+    require_super_admin(user)
+    await db.coupons.delete_one({"coupon_id": coupon_id})
+    return {"ok": True}
+
+
+@api_router.get("/coupons/validate/{code}")
+async def validate_coupon(code: str, plan_key: str, user: dict = Depends(get_current_user)):
+    """Checked by client at checkout page. Returns discounted price."""
+    doc = await db.coupons.find_one({"code": code.strip().upper(), "active": True}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Cupom inválido")
+    if doc.get("valid_until"):
+        try:
+            if datetime.fromisoformat(doc["valid_until"].replace("Z", "+00:00")) < datetime.now(timezone.utc):
+                raise HTTPException(status_code=410, detail="Cupom expirado")
+        except ValueError:
+            pass
+    if doc.get("max_uses") is not None and doc.get("uses_count", 0) >= doc["max_uses"]:
+        raise HTTPException(status_code=410, detail="Cupom esgotado")
+    if doc.get("applies_to") and plan_key not in doc["applies_to"]:
+        raise HTTPException(status_code=400, detail=f"Cupom não aplicável ao plano {plan_key}")
+    return {
+        "code": doc["code"], "kind": doc["kind"], "value": doc["value"],
+        "first_payment_only": doc.get("first_payment_only", True),
+    }
+
+
+def _apply_coupon(price: float, coupon: Optional[Dict[str, Any]]) -> float:
+    if not coupon:
+        return price
+    if coupon["kind"] == "percent":
+        return max(0.0, round(price * (1 - float(coupon["value"]) / 100), 2))
+    return max(0.0, round(price - float(coupon["value"]), 2))
+
+
+# ---------- Super-admin dashboard ----------
+@api_router.get("/super-admin/summary")
+async def super_admin_summary(user: dict = Depends(get_current_user)):
+    require_super_admin(user)
+    subs = await db.subscriptions.find({}, {"_id": 0}).to_list(5000)
+    active = [s for s in subs if s.get("status") == "active"]
+    trial = [s for s in subs if s.get("status") == "trial"]
+    past_due = [s for s in subs if s.get("status") == "past_due"]
+    cancelled = [s for s in subs if s.get("status") == "cancelled"]
+    expired = [s for s in subs if _sub_status_effective(s) == "expired"]
+    mrr = sum(
+        (float(s.get("value") or 0) if s.get("billing_cycle") == "monthly"
+         else float(s.get("value") or 0) / 12)
+        for s in active
+    )
+    total_clinics = await db.clinics.count_documents({})
+    total_payments = await db.payments.count_documents({"status": "paid"})
+    revenue_total = 0.0
+    async for p in db.payments.find({"status": "paid"}, {"_id": 0, "amount": 1}):
+        revenue_total += float(p.get("amount") or 0)
+    churn = round(len(cancelled) / max(1, len(cancelled) + len(active)) * 100, 1)
+    return {
+        "clinics": total_clinics,
+        "active": len(active),
+        "trial": len(trial),
+        "past_due": len(past_due),
+        "cancelled": len(cancelled),
+        "expired": len(expired),
+        "mrr": round(mrr, 2),
+        "arr": round(mrr * 12, 2),
+        "total_revenue": round(revenue_total, 2),
+        "total_payments": total_payments,
+        "conversion_rate": round(len(active) / max(1, len(active) + len(trial)) * 100, 1),
+        "churn_rate": churn,
+    }
+
+
+@api_router.get("/super-admin/clinics")
+async def super_admin_clinics(user: dict = Depends(get_current_user)):
+    require_super_admin(user)
+    clinics = await db.clinics.find({}, {"_id": 0}).to_list(2000)
+    out = []
+    for c in clinics:
+        sub = await db.subscriptions.find_one({"clinic_id": c["clinic_id"]}, {"_id": 0}) or {}
+        user_count = await db.users.count_documents({"clinic_id": c["clinic_id"], "active": {"$ne": False}})
+        pat_count = await db.patients.count_documents({"clinic_id": c["clinic_id"]})
+        out.append({
+            **c,
+            "subscription": {
+                "plan_key": sub.get("plan_key"),
+                "status": sub.get("status"),
+                "effective_status": _sub_status_effective(sub) if sub else None,
+                "value": sub.get("value"),
+                "trial_ends_at": sub.get("trial_ends_at"),
+                "next_billing_date": sub.get("next_billing_date"),
+            },
+            "user_count": user_count,
+            "patient_count": pat_count,
+        })
+    return out
+
+
+# ---------- Emails via Resend ----------
+def _email_shell(title: str, body_html: str, cta_text: Optional[str] = None, cta_url: Optional[str] = None) -> str:
+    button = ""
+    if cta_text and cta_url:
+        button = f"""<tr><td align="center" style="padding:22px 0 4px;">
+        <a href="{cta_url}" style="display:inline-block;padding:12px 22px;background:#B76E79;color:#fff;text-decoration:none;border-radius:10px;font-family:Georgia,serif;font-size:14px;letter-spacing:.5px;">{cta_text}</a>
+        </td></tr>"""
+    return f"""<!DOCTYPE html><html><body style="margin:0;background:#faf7f5;font-family:Helvetica,Arial,sans-serif;color:#2b2426;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:32px 12px;">
+      <tr><td align="center">
+        <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.06);">
+          <tr><td style="padding:24px 28px 4px;">
+            <div style="font-family:Georgia,serif;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#B76E79;">ProClinic</div>
+            <h1 style="font-family:Georgia,serif;font-size:22px;margin:6px 0 4px;color:#1a1a1a;">{title}</h1>
+          </td></tr>
+          <tr><td style="padding:8px 28px 20px;font-size:14px;line-height:1.6;color:#3a3336;">{body_html}</td></tr>
+          {button}
+          <tr><td style="padding:24px 28px;border-top:1px solid #eee;font-size:11px;color:#98908b;text-align:center;">
+            Você recebeu este email porque é administrador de uma clínica no ProClinic. Se não deseja mais receber, responda com "SAIR".
+          </td></tr>
+        </table>
+      </td></tr>
+    </table></body></html>"""
+
+
+async def send_email(to: str, subject: str, html: str, idempotency_key: str, attachment: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Send with idempotency and audit trail. Returns Resend email_id or None on failure."""
+    if not RESEND_API_KEY:
+        logger.warning("Skipping email: RESEND_API_KEY not set")
+        return None
+    if await db.email_logs.find_one({"idempotency_key": idempotency_key, "status": "sent"}):
+        return None
+    params = {"from": SENDER_EMAIL, "to": [to], "subject": subject, "html": html}
+    if attachment:
+        params["attachments"] = [attachment]
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        email_id = (result or {}).get("id")
+        await db.email_logs.insert_one({
+            "email_id": f"em_{uuid.uuid4().hex[:12]}", "resend_id": email_id, "to": to,
+            "subject": subject, "idempotency_key": idempotency_key, "status": "sent",
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return email_id
+    except Exception as e:
+        logger.error("Resend send failed: %s", e)
+        await db.email_logs.insert_one({
+            "email_id": f"em_{uuid.uuid4().hex[:12]}", "to": to, "subject": subject,
+            "idempotency_key": idempotency_key, "status": "failed", "error": str(e),
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return None
+
+
+async def _admin_of(clinic_id: str) -> Optional[Dict[str, Any]]:
+    return await db.users.find_one({"clinic_id": clinic_id, "role": "admin"}, {"_id": 0})
+
+
+async def send_email_trial_welcome(clinic_id: str):
+    admin = await _admin_of(clinic_id)
+    if not admin:
+        return
+    key = f"trial_welcome:{clinic_id}"
+    frontend = os.environ.get("FRONTEND_URL", "")
+    html = _email_shell(
+        "Bem-vindo(a) ao ProClinic",
+        f"""<p>Olá <strong>{admin.get('name','')}</strong>,</p>
+        <p>Seu teste gratuito de <strong>7 dias</strong> começou. Você tem acesso a todos os recursos do plano <strong>Professional</strong>: agenda, prontuário, documentos digitais, IA clínica e orçamentos.</p>
+        <p>Comece adicionando seus profissionais e cadastrando os primeiros pacientes.</p>""",
+        "Acessar painel", frontend + "/dashboard",
+    )
+    await send_email(admin["email"], "Bem-vindo(a) ao ProClinic — trial ativado", html, key)
+
+
+async def send_email_trial_expiring(clinic_id: str, days_left: int):
+    admin = await _admin_of(clinic_id)
+    if not admin:
+        return
+    key = f"trial_expiring:{clinic_id}:{days_left}"
+    frontend = os.environ.get("FRONTEND_URL", "")
+    html = _email_shell(
+        f"Seu trial expira em {days_left} dia(s)",
+        f"""<p>Olá <strong>{admin.get('name','')}</strong>,</p>
+        <p>Seu teste gratuito termina em breve. Assine agora um plano para não perder o acesso e continuar aproveitando tudo o que já configurou.</p>
+        <p>Planos a partir de <strong>R$ 59,90/mês</strong>. Pagamento por PIX, Boleto ou Cartão.</p>""",
+        "Escolher plano", frontend + "/planos",
+    )
+    await send_email(admin["email"], f"Seu trial ProClinic expira em {days_left} dia(s)", html, key)
+
+
+async def send_email_payment_confirmed(clinic_id: str, payment: Dict[str, Any], invoice_pdf_bytes: Optional[bytes] = None):
+    admin = await _admin_of(clinic_id)
+    if not admin:
+        return
+    amount = float(payment.get("value") or payment.get("amount") or 0)
+    key = f"payment_confirmed:{payment.get('id') or payment.get('payment_id')}"
+    frontend = os.environ.get("FRONTEND_URL", "")
+    html = _email_shell(
+        "Pagamento confirmado ✓",
+        f"""<p>Recebemos seu pagamento de <strong>R$ {amount:,.2f}</strong>. Seu acesso ao ProClinic está ativo.</p>
+        <p>Uma fatura em PDF segue anexa a este email para seus registros.</p>""".replace(",", "X").replace(".", ",").replace("X", "."),
+        "Ver minha assinatura", frontend + "/minha-assinatura",
+    )
+    import base64
+    attachment = None
+    if invoice_pdf_bytes:
+        attachment = {"filename": "fatura-proclinic.pdf", "content": base64.b64encode(invoice_pdf_bytes).decode("ascii"), "content_type": "application/pdf"}
+    await send_email(admin["email"], "ProClinic — Pagamento confirmado", html, key, attachment=attachment)
+
+
+async def send_email_payment_overdue(clinic_id: str):
+    admin = await _admin_of(clinic_id)
+    if not admin:
+        return
+    key = f"payment_overdue:{clinic_id}:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+    frontend = os.environ.get("FRONTEND_URL", "")
+    html = _email_shell(
+        "Pagamento em atraso",
+        f"""<p>Olá <strong>{admin.get('name','')}</strong>,</p>
+        <p>Identificamos que seu pagamento não foi processado. Para manter o acesso, regularize sua assinatura pelo painel.</p>
+        <p>Após <strong>15 dias sem pagamento</strong>, o acesso será suspenso.</p>""",
+        "Regularizar agora", frontend + "/minha-assinatura",
+    )
+    await send_email(admin["email"], "ProClinic — Pagamento em atraso", html, key)
+
+
+# ---------- Invoice PDF ----------
+def _build_invoice_pdf(payment: Dict[str, Any], clinic: Dict[str, Any], sub: Dict[str, Any]) -> bytes:
+    amount = float(payment.get("value") or payment.get("amount") or 0)
+    date = payment.get("paymentDate") or payment.get("paid_at") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      @page {{ size: A4; margin: 20mm; }}
+      body {{ font-family: Helvetica, Arial, sans-serif; color: #1a1a1a; }}
+      h1 {{ font-family: Georgia, serif; font-size: 20pt; margin: 0 0 4pt; color: #B76E79; }}
+      .meta {{ font-size: 10pt; color: #666; margin-bottom: 20pt; }}
+      table {{ width: 100%; border-collapse: collapse; margin: 12pt 0; }}
+      th, td {{ padding: 8pt 10pt; text-align: left; border-bottom: 1px solid #e6ded7; font-size: 11pt; }}
+      th {{ background: #f9f4f1; text-transform: uppercase; letter-spacing: 1pt; font-size: 9pt; color: #6b6b6b; }}
+      .total {{ font-size: 16pt; font-weight: bold; text-align: right; padding-top: 14pt; }}
+      .footer {{ margin-top: 30pt; font-size: 9pt; color: #999; text-align: center; }}
+    </style></head><body>
+      <h1>Fatura ProClinic</h1>
+      <div class="meta">
+        Nº {payment.get('gateway_payment_id') or payment.get('payment_id') or '—'}<br/>
+        Emitida em {date}<br/>
+        Cliente: {clinic.get('name','')} · CNPJ {clinic.get('cnpj','—')}
+      </div>
+      <table>
+        <thead><tr><th>Descrição</th><th style="text-align:right;">Valor</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>ProClinic — Plano {(sub.get('plan_key') or '').capitalize()} ({sub.get('billing_cycle','monthly') == 'yearly' and 'Anual' or 'Mensal'})</td>
+            <td style="text-align:right;">R$ {amount:,.2f}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="total">Total pago: R$ {amount:,.2f}</div>
+      <div class="footer">Este documento é uma confirmação de pagamento. Para nota fiscal formal, entre em contato.</div>
+    </body></html>""".replace(",", "X").replace(".", ",").replace("X", ".")
+    # NOTE: number formatting is intentionally basic; xhtml2pdf handles UTF-8 well.
+    buf = io.BytesIO()
+    pisa.CreatePDF(src=html, dest=buf, encoding="utf-8")
+    return buf.getvalue()
+
+
+async def _persist_invoice_pdf(clinic_id: str, payment_id: str, pdf_bytes: bytes) -> Dict[str, str]:
+    rel_path = f"{APP_NAME}/{clinic_id}/invoices/inv-{payment_id}.pdf"
+    result = put_object(rel_path, pdf_bytes, "application/pdf")
+    file_id = f"file_{uuid.uuid4().hex[:12]}"
+    sig = make_file_signature(file_id, clinic_id)
+    await db.files.insert_one({
+        "file_id": file_id, "storage_path": result["path"],
+        "original_filename": f"fatura-{payment_id}.pdf", "content_type": "application/pdf",
+        "size": result.get("size", len(pdf_bytes)), "clinic_id": clinic_id,
+        "is_deleted": False, "signature": sig,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"path": result["path"], "url": f"/api/files/{result['path']}?sig={sig}"}
+
+
+@api_router.get("/invoices")
+async def list_invoices(user: dict = Depends(get_current_user)):
+    docs = await db.payments.find(
+        {"clinic_id": user["clinic_id"], "invoice_url": {"$exists": True, "$ne": None}}, {"_id": 0}
+    ).sort("created_at", -1).to_list(200)
+    return docs
+
+
+# ---------- Cron task ----------
+async def trial_check_loop():
+    """Runs hourly. Notifies trial reaching last 1 day. Marks read_only + expired transitions."""
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            async for s in db.subscriptions.find({"status": "trial"}):
+                try:
+                    trial_end = datetime.fromisoformat(s.get("trial_ends_at","").replace("Z", "+00:00"))
+                    hours = (trial_end - now).total_seconds() / 3600
+                    if 20 <= hours <= 28:
+                        await send_email_trial_expiring(s["clinic_id"], 1)
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning("trial_check_loop error: %s", e)
+        await asyncio.sleep(3600)
+
+
+# ============================================================
 # App setup
 # ============================================================
 app.include_router(api_router)
@@ -3281,12 +3697,29 @@ async def on_startup():
     # ensure webhook idempotency at DB level
     try:
         await db.webhook_events.create_index("event_id", unique=True)
+        await db.coupons.create_index("code", unique=True)
+        await db.email_logs.create_index("idempotency_key", unique=True, sparse=True)
     except Exception:
         pass
     # ensure trial for the demo clinic (idempotent)
     admin = await db.users.find_one({"email": os.environ.get("ADMIN_EMAIL", "admin@proclinic.com")}, {"_id": 0})
     if admin:
         await ensure_trial_subscription(admin["clinic_id"], admin["user_id"])
+    # ensure super-admin user (idempotent)
+    sa_email = "superadmin@proclinic.com"
+    if not await db.users.find_one({"email": sa_email}):
+        hashed = bcrypt.hashpw(b"super123", bcrypt.gensalt()).decode("utf-8")
+        await db.users.insert_one({
+            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "email": sa_email, "password_hash": hashed, "name": "Super Admin",
+            "role": "super_admin", "clinic_id": None, "active": True,
+            "auth_provider": "email",
+            "password_change_required": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info("Seeded super_admin: %s / super123", sa_email)
+    # start background trial-check loop
+    asyncio.create_task(trial_check_loop())
 
 
 @app.on_event("shutdown")

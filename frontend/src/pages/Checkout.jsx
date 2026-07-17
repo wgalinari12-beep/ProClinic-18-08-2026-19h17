@@ -21,6 +21,8 @@ export default function Checkout() {
   const [method, setMethod] = useState("PIX");
   const [busy, setBusy] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [couponCode, setCouponCode] = useState("");
+  const [couponInfo, setCouponInfo] = useState(null);
 
   const [form, setForm] = useState({
     cpf_cnpj: "", holder_name: "", email: "", phone: "",
@@ -36,6 +38,22 @@ export default function Checkout() {
   }, [planKey]);
 
   const price = cycle === "yearly" ? plan?.annual_price : plan?.price;
+  const discount = couponInfo ? (couponInfo.kind === "percent"
+    ? (price * couponInfo.value) / 100
+    : couponInfo.value) : 0;
+  const finalPrice = Math.max(0, price - discount);
+
+  const applyCoupon = async () => {
+    if (!couponCode) return;
+    try {
+      const { data } = await api.get(`/coupons/validate/${couponCode.trim().toUpperCase()}`, { params: { plan_key: planKey } });
+      setCouponInfo(data);
+      toast.success(`Cupom ${data.code} aplicado`);
+    } catch (e) {
+      setCouponInfo(null);
+      toast.error(e.response?.data?.detail || "Cupom inválido");
+    }
+  };
 
   const submit = async () => {
     if (!form.cpf_cnpj || !form.holder_name || !form.email) {
@@ -48,6 +66,7 @@ export default function Checkout() {
         plan_key: planKey,
         billing_cycle: cycle,
         billing_type: method,
+        coupon_code: couponInfo?.code || null,
         cpf_cnpj: form.cpf_cnpj,
         holder_name: form.holder_name,
         email: form.email,
@@ -147,7 +166,7 @@ export default function Checkout() {
               <Button onClick={submit} disabled={busy}
                 data-testid="checkout-submit"
                 className="w-full h-12 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90">
-                {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : `Confirmar assinatura · ${moneyBR(price)}${cycle === "yearly" ? "/ano" : "/mês"}`}
+                {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : `Confirmar assinatura · ${moneyBR(finalPrice)}${cycle === "yearly" ? "/ano" : "/mês"}`}
               </Button>
 
               <div className="text-[11px] text-muted-foreground/70 flex items-center gap-1 justify-center">
@@ -167,14 +186,31 @@ export default function Checkout() {
                 </div>
                 {cycle === "yearly" && (
                   <div className="flex justify-between text-success text-xs">
-                    <span>Economia</span>
+                    <span>Economia anual</span>
                     <span className="font-mono">- {moneyBR(plan.price * 12 - plan.annual_price)}</span>
+                  </div>
+                )}
+                {couponInfo && (
+                  <div className="flex justify-between text-success text-xs">
+                    <span>Cupom {couponInfo.code}{couponInfo.first_payment_only ? " (1º pagto)" : ""}</span>
+                    <span className="font-mono">- {moneyBR(discount)}</span>
                   </div>
                 )}
               </div>
               <div className="flex justify-between font-display text-lg font-semibold pt-2 border-t border-border">
                 <span>Total</span>
-                <span className="font-mono">{moneyBR(price)}</span>
+                <span className="font-mono" data-testid="checkout-total">{moneyBR(finalPrice)}</span>
+              </div>
+              {/* Coupon input */}
+              <div className="pt-3 border-t border-border space-y-1.5">
+                <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">Cupom de desconto</Label>
+                <div className="flex gap-2">
+                  <Input value={couponCode} onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                    placeholder="Ex.: LAUNCH20" className="h-10 rounded-xl flex-1" data-testid="coupon-input" />
+                  <Button type="button" variant="outline" onClick={applyCoupon} className="h-10 rounded-xl" data-testid="coupon-apply">
+                    Aplicar
+                  </Button>
+                </div>
               </div>
               <Badge variant="outline" className="text-[10px] uppercase mt-1">Trial ainda ativo por 7 dias</Badge>
             </div>

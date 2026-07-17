@@ -15,6 +15,10 @@ export default function ProtectedRoute({ children, roles }) {
     );
   }
   if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
+  // super_admin lives in its own dashboard
+  if (user.role === "super_admin" && ["/dashboard", "/pacientes", "/agenda", "/prontuario", "/anamnese", "/documentos", "/procedimentos", "/mensagens", "/assistente-ia", "/financeiro", "/equipe", "/minha-clinica", "/minha-assinatura", "/planos"].some((p) => location.pathname.startsWith(p))) {
+    return <Navigate to="/super-admin" replace />;
+  }
   if (roles && !roles.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return children;
 }
