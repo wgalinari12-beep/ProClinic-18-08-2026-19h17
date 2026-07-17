@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { TrendingUp, Users, Wallet, Percent, Plus, Loader2, Trash2, Building2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -186,6 +186,9 @@ export default function SuperAdmin() {
         <DialogContent className="rounded-2xl max-w-lg" data-testid="coupon-form-dialog">
           <DialogHeader>
             <DialogTitle className="font-display text-xl tracking-tight">Novo cupom</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Configure código, desconto e planos onde o cupom pode ser aplicado.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <F label="Código (ex.: LAUNCH20)"><Input value={couponForm.code} onChange={(e) => setCouponForm({ ...couponForm, code: e.target.value.toUpperCase() })} className="h-11 rounded-xl" data-testid="coupon-code" /></F>

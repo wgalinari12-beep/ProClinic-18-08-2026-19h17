@@ -31,32 +31,39 @@ Módulo Orçamento com link público `/orcamento/:token`, financeiro auto na con
 Biblioteca de modelos com 16 variáveis dinâmicas, editor markdown + preview, dupla assinatura (canvas + QR mobile), PDF via xhtml2pdf com QR de validação, sigilo profissional, auditoria completa, rotas públicas.
 
 ### Fase 2.4A — Assinaturas & Pagamentos (Jul/2026)
-- ✅ **Integração Asaas** (sandbox real) — customer + subscription + PIX/Boleto/Cartão + webhooks.
-- ✅ **3 planos** (Starter R$59,90 · Professional R$99,90 · Premium R$149,90) com 20% off no anual.
-- ✅ **Trial 7 dias** automático (sem cartão) para toda nova clínica; grace read-only 3 dias; expired.
-- ✅ **Feature gating** server-side (`require_feature`): IA e Documentos ≥ Professional; WhatsApp ≥ Premium.
-- ✅ **Endpoints**: /plans, /subscriptions/me, /subscriptions/checkout, /subscriptions/cancel, /subscriptions/change-plan, /subscriptions/payments, /admin/finance/summary (scoped por clínica).
-- ✅ **Webhooks Asaas** com header `asaas-access-token`, idempotência por `event.id` + unique index em `webhook_events`, eventos PAYMENT_CONFIRMED/RECEIVED/OVERDUE/DELETED e SUBSCRIPTION_UPDATED/INACTIVATED/DELETED.
-- ✅ **Frontend**: /planos (toggle mensal↔anual), /checkout/:planKey (PIX/Boleto/Cartão), /minha-assinatura (status + histórico + cancelar), TrialBanner global no Layout.
-- ✅ **RBAC UX**: item "Assinatura" na sidebar apenas para admin; botão "Assinar" desabilitado para não-admin com título "Pedir ao admin".
-- ✅ **Backend tests**: 20/20 (`test_phase2_4a_subscriptions.py`) — chamadas reais para Asaas sandbox.
-- ✅ **Polimentos pós-teste**: /admin/finance/summary scoped por clinic_id; webhook exige id; unique index em event_id.
+- ✅ Integração Asaas sandbox: customer + subscription (PIX/Boleto/Cartão) + webhooks.
+- ✅ 3 planos com 20% off no anual, trial 7d + read-only 3d, feature gating.
+- ✅ Endpoints checkout/cancel/change-plan/payments; webhooks idempotentes.
+- ✅ Frontend: /planos, /checkout, /minha-assinatura, TrialBanner global.
+- ✅ Backend tests: 20/20.
 
-## P0 backlog — Fase 2.4B (próxima)
-- **Super-admin dashboard cross-tenant** (MRR/ARR/churn/inadimplência global).
-- **Cupons de desconto** (promo codes com prazo + %).
-- **Emails automáticos** (Resend) — trial expirando, pagamento recebido, cobrança em atraso.
-- **Fatura em PDF** por pagamento.
+### Fase 2.4B — Super-admin + Cupons + Faturas + Emails (Jul/2026)
+- ✅ **Role `super_admin`** com dashboard `/super-admin` (MRR/ARR/churn/inadimplência + lista de clínicas + KPIs cross-tenant).
+- ✅ **Cupons de desconto** — CRUD por super-admin, campo `coupon_code` no /checkout, validador `/coupons/validate/{code}?plan_key=`, aplicação 1º pagamento (via Asaas `discount` block) ou recorrente (valor reduzido).
+- ✅ **Fatura em PDF** gerada automaticamente no webhook PAYMENT_CONFIRMED (xhtml2pdf), armazenada em Object Storage com signed URL, disponível em /minha-assinatura + endpoint `/api/invoices`.
+- ✅ **Integração Resend** com idempotência (`email_logs`) + 4 emails automáticos:
+  1. Trial welcome (ao criar trial)
+  2. Trial expiring (24h antes, via cron asyncio de 1h)
+  3. Payment confirmed (com fatura PDF anexa)
+  4. Payment overdue (past_due)
+- ✅ **Route guards**: `/super-admin` protegida por `roles=['super_admin']`; super_admin auto-redirecionado para /super-admin ao logar; sidebar restrita.
+- ✅ **Validações**: cupom `value` com `Field(ge=0)` + `field_validator` para percent≤100; webhook exige `event.id`; unique index em coupons/webhook_events/email_logs.
+- ✅ **Backend tests**: 24/24 (`test_phase2_4b_superadmin.py`).
 
-## P0 backlog — Fase 2.3B
-- **Import DOCX + PDF** como modelos.
-- **Relatórios de auditoria** com filtros.
-- **Realtime QR sign** feedback (polling).
+## P0 backlog — Fase 2.4C (próxima)
+- **Sequência onboarding completa** (4 emails ao longo dos 7 dias com dicas contextuais + tracking de abertura).
+- **Templates HTML premium** (logo, cores da clínica, mode dark).
+- **GET /api/super-admin/email-logs** para observability de emails enviados/falhados.
+- **Cupons: aplicar cupom apenas para clínicas específicas** (whitelist opcional).
+
+## P0 backlog — Fase 2.3B / paralelo
+- Import DOCX + PDF como modelos.
+- Relatórios de auditoria com filtros.
+- Feedback realtime QR sign.
 
 ## P0 backlog — Fase 2.2C / paralelo
-- **WhatsApp Evolution API real** (aguardando credenciais do usuário).
-- **Refactor `server.py`** (~3300 linhas) em routers por domínio: /routes/subscriptions.py, /services/asaas.py (+ helpers _normalize_cpf, retries em asaas_request).
-- **Auditoria de todas as ações** (não só documentos).
+- WhatsApp Evolution API real (aguardando credenciais).
+- Refactor `server.py` (~3740 linhas) em routers por domínio (auth, users, files, budgets, attendance, documents, subscriptions, super_admin, public).
 
 ## P1 backlog
 - DOC_PUBLIC_SECRET separado do JWT_SECRET.
