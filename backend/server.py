@@ -1999,7 +1999,7 @@ class ClinicSettingsIn(BaseModel):
     tiktok: Optional[str] = None
     youtube: Optional[str] = None
     logo_url: Optional[str] = None
-    primary_color: Optional[str] = None
+    primary_color: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
 
 
 @api_router.get("/clinic")

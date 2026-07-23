@@ -41,20 +41,25 @@ Biblioteca de modelos com 16 variáveis dinâmicas, editor markdown + preview, d
 - ✅ **Role `super_admin`** com dashboard `/super-admin` (MRR/ARR/churn/inadimplência + lista de clínicas + KPIs cross-tenant).
 - ✅ **Cupons de desconto** — CRUD por super-admin, campo `coupon_code` no /checkout, validador `/coupons/validate/{code}?plan_key=`, aplicação 1º pagamento (via Asaas `discount` block) ou recorrente (valor reduzido).
 - ✅ **Fatura em PDF** gerada automaticamente no webhook PAYMENT_CONFIRMED (xhtml2pdf), armazenada em Object Storage com signed URL, disponível em /minha-assinatura + endpoint `/api/invoices`.
-- ✅ **Integração Resend** com idempotência (`email_logs`) + 4 emails automáticos:
-  1. Trial welcome (ao criar trial)
-  2. Trial expiring (24h antes, via cron asyncio de 1h)
-  3. Payment confirmed (com fatura PDF anexa)
-  4. Payment overdue (past_due)
-- ✅ **Route guards**: `/super-admin` protegida por `roles=['super_admin']`; super_admin auto-redirecionado para /super-admin ao logar; sidebar restrita.
-- ✅ **Validações**: cupom `value` com `Field(ge=0)` + `field_validator` para percent≤100; webhook exige `event.id`; unique index em coupons/webhook_events/email_logs.
-- ✅ **Backend tests**: 24/24 (`test_phase2_4b_superadmin.py`).
+- ✅ **Integração Resend** com idempotência (`email_logs`) + 4 emails automáticos.
+- ✅ **Route guards**, `Field(ge=0)` + validator para percent≤100; webhook exige `event.id`; unique index em coupons/webhook_events/email_logs.
+- ✅ **Backend tests**: 24/24.
 
-## P0 backlog — Fase 2.4C (próxima)
-- **Sequência onboarding completa** (4 emails ao longo dos 7 dias com dicas contextuais + tracking de abertura).
-- **Templates HTML premium** (logo, cores da clínica, mode dark).
-- **GET /api/super-admin/email-logs** para observability de emails enviados/falhados.
-- **Cupons: aplicar cupom apenas para clínicas específicas** (whitelist opcional).
+### Fase 2.4C — Templates premium + Onboarding + Tracking (Jul/2026)
+- ✅ **Template HTML premium** para todos os emails — usa `clinic.logo_url` + `clinic.primary_color`, tipografia Georgia, botão pill, suporte a dark mode via `@media (prefers-color-scheme)`.
+- ✅ **Sequência de onboarding** 4 emails ao longo dos 7 dias de trial (welcome D1, features D3, social proof D5, expiring D6). Cron `trial_check_loop` roda 1h e dispara nos milestones.
+- ✅ **Tracking de abertura** via pixel GIF 1x1 (`/api/email-tracking/open/{email_id}.png`) — incrementa `opened_at` + `open_count`.
+- ✅ **Tracking de cliques** via wrapper redirect (`/api/email-tracking/click/{email_id}?u=...`) com safety (só http/https).
+- ✅ **Aba "Emails" no /super-admin** com tabela de logs (data, para, assunto, status, abertura, cliques) — endpoint `/api/super-admin/email-logs`.
+- ✅ **Cor primária configurável** na página /minha-clinica (input type=color) + persistência em `clinics.primary_color` com validação `pattern=^#[0-9a-fA-F]{6}$`.
+- ✅ **Backend tests**: 42/42 (18 novos 2.4C + 24 regressão 2.4B, 1 skipped).
+- ✅ **Polimento pós-teste**: hex validation em `primary_color`, `FRONTEND_URL` alinhado ao host público.
+
+## P0 backlog — Fase 2.4D (próxima)
+- **Clínica demo pré-populada** para o super-admin (gera clínica fake com 30 pacientes, 100 atendimentos históricos, orçamentos e docs — útil para demonstrações).
+- **Cupons: whitelist opcional de clínicas específicas**.
+- **Pagination + filtros** em /super-admin/email-logs.
+- **Verificar domínio próprio no Resend** (produção real).
 
 ## P0 backlog — Fase 2.3B / paralelo
 - Import DOCX + PDF como modelos.
@@ -63,7 +68,7 @@ Biblioteca de modelos com 16 variáveis dinâmicas, editor markdown + preview, d
 
 ## P0 backlog — Fase 2.2C / paralelo
 - WhatsApp Evolution API real (aguardando credenciais).
-- Refactor `server.py` (~3740 linhas) em routers por domínio (auth, users, files, budgets, attendance, documents, subscriptions, super_admin, public).
+- Refactor `server.py` (~3900 linhas) em routers por domínio.
 
 ## P1 backlog
 - DOC_PUBLIC_SECRET separado do JWT_SECRET.
