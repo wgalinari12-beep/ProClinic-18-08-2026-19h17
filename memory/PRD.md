@@ -55,11 +55,30 @@ Biblioteca de modelos com 16 variáveis dinâmicas, editor markdown + preview, d
 - ✅ **Backend tests**: 42/42 (18 novos 2.4C + 24 regressão 2.4B, 1 skipped).
 - ✅ **Polimento pós-teste**: hex validation em `primary_color`, `FRONTEND_URL` alinhado ao host público.
 
-## P0 backlog — Fase 2.4D (próxima)
-- **Clínica demo pré-populada** para o super-admin (gera clínica fake com 30 pacientes, 100 atendimentos históricos, orçamentos e docs — útil para demonstrações).
-- **Cupons: whitelist opcional de clínicas específicas**.
-- **Pagination + filtros** em /super-admin/email-logs.
-- **Verificar domínio próprio no Resend** (produção real).
+### Fase 2.5A+B — Ecossistema Financeiro: Fundação + Parcelamento (Fev/2026)
+- ✅ **Auditoria completa** salva em `/app/memory/AUDITORIA_FINANCEIRO.md` (endpoint por endpoint + schemas + fluxos + RBAC + gaps).
+- ✅ **RBAC no backend** — helpers `require_finance_read` (admin/financeiro/recepcao/super_admin) e `require_finance_write` (admin/financeiro) aplicados em GET/POST/PUT/DELETE `/api/finance/*`. Profissional/marketing agora bloqueados (403).
+- ✅ **PUT não-destrutivo** — `FinancialEntryPatch` com `exclude_unset=True` + `$set` seletivo; `paid_at` gerenciado automaticamente (preenchido quando `paid→true`, limpo quando `paid→false`).
+- ✅ **Schema `FinancialEntryIn` estendido** aditivamente: `procedure_id`, `professional_id`, `cost_center`, `notes`, `installment_group_id`, `installment_number`, `installment_total`. Defaults preservam legacy docs.
+- ✅ **Filtros avançados** em GET `/api/finance/entries`: `?type=`, `?paid=`, `?patient_id=`, `?date_from=`, `?date_to=`, `?installment_group_id=`, `?search=`, `?limit=`.
+- ✅ **Parcelamento inteligente** em `POST /api/attendance/{sid}/finalize` — aceita `installments` (1..48) + `installment_interval_days`; gera N entries com mesmo `installment_group_id`, `installment_number` (1..N), vencimentos escalonados, valor dividido com centavo residual na última parcela.
+- ✅ **Enrichment automático** — `procedure_id` e `professional_id` copiados do appointment/session no finalize.
+- ✅ **Fluxo orçamento público** — `sign_public_budget` agora marca `pending_charge_generation=true` (clínica revisa antes de gerar cobranças) e **não** cria financial_entries automaticamente.
+- ✅ **Novo endpoint** `POST /api/budgets/{budget_id}/generate-charges` — gera N parcelas do orçamento aprovado, idempotente por `budget_id`.
+- ✅ **Índices MongoDB** em `financial_entries`: `entry_id` unique, `(clinic_id, due_date)`, `(clinic_id, patient_id)`, `(clinic_id, paid, type)`, `(clinic_id, installment_group_id)`, `(clinic_id, budget_id)`.
+- ✅ **Frontend `CompletePaymentDialog`** — bloco de parcelas com nº parcelas + intervalo (dias) + preview "6x de R$ 200,00 a cada 30 dias".
+- ✅ **Frontend `Financeiro.jsx`** — `togglePaid` agora envia apenas `{paid}` (não destrói campos internos).
+- ✅ **Backend tests**: 23/23 novos, 0 regressões. Cobertura RBAC + PATCH + filtros + parcelamento (pago/parcial/nao_pago) + generate-charges idempotente.
+
+## P0 backlog — Fase 2.5C+D (próxima)
+- **Aba "Financeiro" em `PatientDetail.jsx`** — histórico financeiro do paciente com totais + pendências.
+- **Endpoint `/api/finance/reports/cashflow?days=30|60|90|180`** — projeção fluxo de caixa por bucket.
+- **Endpoint `/api/finance/reports/dre?from=&to=`** — DRE simplificado (Receitas / Custo Direto / Despesas Operacionais / Resultado).
+- **Refatoração completa da página `Financeiro.jsx`** — filtros avançados na UI, tabela paginada, ações em lote, dialog de detalhes, aba "Parcelas".
+- **Recibos PDF** com numeração sequencial `REC-YYYY-####` + armazenamento em Object Storage.
+- **Arquitetura fiscal** (interfaces/classes placeholder para NF-e/NFSe — sem integração real ainda).
+- **Exports CSV/Excel/PDF** com download imediato + filtros aplicados.
+- **Log de auditoria** de edições financeiras (coleção `financial_audit_logs`).
 
 ## P0 backlog — Fase 2.3B / paralelo
 - Import DOCX + PDF como modelos.
