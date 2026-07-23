@@ -1,0 +1,45 @@
+{
+  "summary": "Phase 2.4C — Email tracking (open/click pixel+redirect), /api/super-admin/email-logs endpoint, ClinicIn.primary_color branding, and onboarding email functions. 42/42 backend tests PASS (18 new for 2.4C + 24 regression from 2.4B, 1 skipped by design). Super Admin 'Emails' tab renders correctly with 11 real email rows showing Data/Para/Assunto/Status/Abertura/Cliques columns and open/click tracking working end-to-end (fired /api/email-tracking/open/{id}.png and .../click/{id}?u=... on live logs and confirmed open_count=1/click_count=1 with opened_at/clicked_at ISO timestamps). Primary color input renders on /minha-clinica with data-testid='clinic-primary-color' and PUT /api/clinic persists primary_color correctly (backend-verified).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/super-admin/email-logs", "issue": "No pagination/filters (limit query param exists, default 200 hard-cap). Fine for now; will need next(offset) as volume grows."},
+      {"endpoint": "PUT /api/clinic — ClinicSettingsIn.primary_color", "issue": "No format validation (accepts any string). Consider `pattern=^#[0-9a-fA-F]{6}$` to reject invalid hex values."},
+      {"endpoint": "backend/.env FRONTEND_URL", "issue": "FRONTEND_URL='https://1372f60d-...emergentagent.com' does NOT match the public REACT_APP_BACKEND_URL. As a result, tracking pixel/click URLs embedded in emails point to the old preview domain (still resolves in emergent infra, but future domain rotations will break existing sent emails). Recommend aligning FRONTEND_URL to the same host as REACT_APP_BACKEND_URL."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_4c_email_tracking.py",
+    "/app/test_reports/pytest/phase2_4c_full_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL/MINOR: Add hex validation on ClinicSettingsIn.primary_color (Pydantic pattern).",
+    "OPTIONAL: Align backend/.env FRONTEND_URL with the current public host so tracking pixel/click URLs in sent emails resolve to the live domain."
+  ],
+  "critical_code_review_comments": [
+    "server.py:3542 — send_email now takes html_builder callable receiving (email_log_id, clinic) so the tracking pixel URL is embedded BEFORE the actual send. Clean separation and idempotency preserved via 'idempotency_key + status=sent' check at line 3548.",
+    "server.py:3811 — email_click_tracking safely gates redirect target with u.startswith(('http://','https://')); javascript:/data:/file: URIs correctly redirect to '/'. Good defensive coding.",
+    "server.py:3797 — email_open_tracking still returns 200 image/gif even when email_id is unknown (update_one is a no-op), so pixel loads never break the client's email rendering. Correct behavior.",
+    "server.py:3827 — /super-admin/email-logs sorts by sent_at DESC and excludes _id via projection. Good.",
+    "server.py:3763 trial_check_loop — 8h tolerance windows (68-76h, 116-124h, 20-28h) around each milestone matches the 1h loop cadence and guarantees each user receives each mail exactly once (bounded by idempotency_key). Good.",
+    "server.py file size is now ~3884 lines — earlier recommendation to split into routers/services still stands but is not a 2.4C blocker.",
+    "MinhaClinica.jsx:126 — <input type='color'> uses controlled React state; onChange dispatches set('primary_color'). Working in real browsers; note: Playwright can't easily simulate native color picker interaction, so E2E was validated via backend PUT + backend GET round-trip."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_4c_email_tracking.py (new)"
+  ],
+  "success_rate": {"backend": "100% (42/42 pass, 1 skipped by design)", "frontend": "100% (Emails tab + primary_color input + minha-assinatura all render and behave correctly)"},
+  "test_credentials": "superadmin@proclinic.com/super123, admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, ana.recep@proclinic.com/ana123 — all OK. Webhook token: whsec_proclinic_a8f3d9e2c1b47506a92e3f81d5c6b0a4.",
+  "seed_data_creation": "Test creates fresh email_log entries via webhook (POST /api/webhooks/asaas with unique event_id/payment_id, externalReference=admin's clinic_id). Also temporarily flips primary_color to #8B5CF6 and back to #B76E79 via PUT /api/clinic. All resend calls fail sandbox with clean error captured — email_logs correctly record status='failed' with clinic_id and email_id populated.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 2.4C is COMPLETE and green. Email tracking (open pixel + click redirect) verified end-to-end on live logs — open_count/click_count/opened_at/clicked_at all increment/populate correctly. Super Admin Emails tab shows 11 rows all with status=failed (Resend sandbox restricts to wgalinari2@gmail.com — expected). Only minor observations: no hex-format validation on primary_color, and backend .env FRONTEND_URL doesn't match the current public host. Neither is blocking.",
+  "rca_of_the_issue": {
+    "initial_webhook_test_failure": "First run of test_webhook_creates_email_log_with_clinic_id_and_email_id failed because the test webhook payload had externalReference=None. The Asaas webhook handler at server.py:3222 falls back to subscription_ref lookup only when externalReference is empty, and since there was no matching gateway_subscription_id, clinic_id ended up None and no email was triggered. The test picked up an unrelated stale email_log from a prior iteration. Fix: fetch admin's clinic_id via /api/auth/me and set externalReference=clinic_id in the webhook payload — then confirmed new email_log gets email_id=em_<12hex> and clinic_id populated correctly (test now passes)."
+  }
+}

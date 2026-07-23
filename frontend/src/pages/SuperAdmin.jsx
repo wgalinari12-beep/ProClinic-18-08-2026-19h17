@@ -26,6 +26,7 @@ export default function SuperAdmin() {
   const [summary, setSummary] = useState(null);
   const [clinics, setClinics] = useState([]);
   const [coupons, setCoupons] = useState([]);
+  const [emails, setEmails] = useState([]);
   const [loading, setLoading] = useState(true);
   const [couponOpen, setCouponOpen] = useState(false);
   const [couponForm, setCouponForm] = useState({
@@ -37,14 +38,16 @@ export default function SuperAdmin() {
   const load = async () => {
     setLoading(true);
     try {
-      const [s, c, cp] = await Promise.all([
+      const [s, c, cp, el] = await Promise.all([
         api.get("/super-admin/summary"),
         api.get("/super-admin/clinics"),
         api.get("/coupons"),
+        api.get("/super-admin/email-logs").catch(() => ({ data: [] })),
       ]);
       setSummary(s.data);
       setClinics(c.data);
       setCoupons(cp.data);
+      setEmails(el.data);
     } catch (e) {
       toast.error("Erro ao carregar dashboard");
     } finally { setLoading(false); }
@@ -96,6 +99,7 @@ export default function SuperAdmin() {
           <TabsList className="bg-muted/40 rounded-xl">
             <TabsTrigger value="clinics" data-testid="tab-clinics" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">Clínicas</TabsTrigger>
             <TabsTrigger value="coupons" data-testid="tab-coupons" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">Cupons</TabsTrigger>
+            <TabsTrigger value="emails" data-testid="tab-emails" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">Emails</TabsTrigger>
           </TabsList>
 
           {/* Clinics */}
@@ -179,11 +183,46 @@ export default function SuperAdmin() {
               )}
             </div>
           </TabsContent>
+
+          {/* Emails */}
+          <TabsContent value="emails" className="mt-5" data-testid="emails-tab">
+            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+              {emails.length === 0 ? (
+                <div className="p-8 text-center text-sm text-muted-foreground">Nenhum email enviado ainda.</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/30">
+                    <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">
+                      <th className="px-4 py-2">Data</th>
+                      <th className="px-4 py-2">Para</th>
+                      <th className="px-4 py-2">Assunto</th>
+                      <th className="px-4 py-2">Status</th>
+                      <th className="px-4 py-2">Abertura</th>
+                      <th className="px-4 py-2">Cliques</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {emails.map((e) => (
+                      <tr key={e.email_id} data-testid={`email-row-${e.email_id}`}>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{e.sent_at ? new Date(e.sent_at).toLocaleString("pt-BR") : "—"}</td>
+                        <td className="px-4 py-3 text-xs">{e.to}</td>
+                        <td className="px-4 py-3 text-xs">{e.subject}</td>
+                        <td className="px-4 py-3">
+                          <Badge variant="outline" className={`text-[10px] uppercase ${e.status === "sent" ? "text-success" : "text-destructive"}`}>{e.status}</Badge>
+                        </td>
+                        <td className="px-4 py-3 text-xs">{e.opened_at ? "✓ aberto" : "—"}</td>
+                        <td className="px-4 py-3 text-xs">{e.click_count || 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </TabsContent>
         </Tabs>
       </div>
 
-      <Dialog open={couponOpen} onOpenChange={setCouponOpen}>
-        <DialogContent className="rounded-2xl max-w-lg" data-testid="coupon-form-dialog">
+      <Dialog open={couponOpen} onOpenChange={setCouponOpen}>        <DialogContent className="rounded-2xl max-w-lg" data-testid="coupon-form-dialog">
           <DialogHeader>
             <DialogTitle className="font-display text-xl tracking-tight">Novo cupom</DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">

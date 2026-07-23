@@ -21,6 +21,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Literal, Any, Dict
 
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, Query, UploadFile, File, Header
+from fastapi.responses import RedirectResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, field_validator
@@ -1998,6 +1999,7 @@ class ClinicSettingsIn(BaseModel):
     tiktok: Optional[str] = None
     youtube: Optional[str] = None
     logo_url: Optional[str] = None
+    primary_color: Optional[str] = None
 
 
 @api_router.get("/clinic")
@@ -3476,55 +3478,105 @@ async def super_admin_clinics(user: dict = Depends(get_current_user)):
 
 
 # ---------- Emails via Resend ----------
-def _email_shell(title: str, body_html: str, cta_text: Optional[str] = None, cta_url: Optional[str] = None) -> str:
+def _email_shell(title: str, body_html: str,
+                 cta_text: Optional[str] = None, cta_url: Optional[str] = None,
+                 clinic: Optional[Dict[str, Any]] = None,
+                 email_log_id: Optional[str] = None,
+                 backend_public_url: Optional[str] = None) -> str:
+    """Premium branded email — respects clinic logo, primary color, and dark mode.
+    Adds a 1x1 open-tracking pixel and click-tracking wrapper on the CTA."""
+    clinic = clinic or {}
+    primary = clinic.get("primary_color") or "#B76E79"
+    logo_url = clinic.get("logo_url")
+    brand_name = clinic.get("name") or "ProClinic"
+    backend = backend_public_url or os.environ.get("FRONTEND_URL", "") + "/api"
+    # click-tracking wrapper
+    tracked_cta_url = cta_url
+    if cta_url and email_log_id:
+        import urllib.parse
+        tracked_cta_url = f"{backend}/email-tracking/click/{email_log_id}?u={urllib.parse.quote(cta_url, safe='')}"
+    # tracking pixel
+    pixel = ""
+    if email_log_id:
+        pixel = f'<img src="{backend}/email-tracking/open/{email_log_id}.png" alt="" width="1" height="1" style="display:block;width:1px;height:1px;opacity:0;" />'
     button = ""
-    if cta_text and cta_url:
-        button = f"""<tr><td align="center" style="padding:22px 0 4px;">
-        <a href="{cta_url}" style="display:inline-block;padding:12px 22px;background:#B76E79;color:#fff;text-decoration:none;border-radius:10px;font-family:Georgia,serif;font-size:14px;letter-spacing:.5px;">{cta_text}</a>
+    if cta_text and tracked_cta_url:
+        button = f"""<tr><td align="center" style="padding:20px 0 8px;">
+        <a href="{tracked_cta_url}" style="display:inline-block;padding:14px 28px;background:{primary};color:#ffffff;text-decoration:none;border-radius:12px;font-family:Georgia,'Times New Roman',serif;font-size:14px;letter-spacing:.6px;font-weight:600;">{cta_text}</a>
         </td></tr>"""
-    return f"""<!DOCTYPE html><html><body style="margin:0;background:#faf7f5;font-family:Helvetica,Arial,sans-serif;color:#2b2426;">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:32px 12px;">
+    header_logo = f'<img src="{logo_url}" alt="{brand_name}" style="height:36px;max-width:180px;display:block;" />' if logo_url else \
+        f'<div style="font-family:Georgia,serif;font-size:20px;font-weight:600;color:{primary};">{brand_name}</div>'
+    return f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
+    <meta name="color-scheme" content="light dark">
+    <meta name="supported-color-schemes" content="light dark">
+    <style>
+      @media (prefers-color-scheme: dark) {{
+        .email-bg {{ background:#0e0c0d !important; }}
+        .email-card {{ background:#181516 !important; box-shadow:0 4px 24px rgba(0,0,0,.5) !important; }}
+        .email-title {{ color:#f5efeb !important; }}
+        .email-body {{ color:#d4c9c1 !important; }}
+        .email-meta {{ color:#a8998f !important; border-color:#2b2426 !important; }}
+        .email-eyebrow {{ color:#e8a4ad !important; }}
+      }}
+    </style></head><body class="email-bg" style="margin:0;background:#faf7f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#2b2426;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="padding:32px 12px;background:transparent;">
       <tr><td align="center">
-        <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.06);">
-          <tr><td style="padding:24px 28px 4px;">
-            <div style="font-family:Georgia,serif;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#B76E79;">ProClinic</div>
-            <h1 style="font-family:Georgia,serif;font-size:22px;margin:6px 0 4px;color:#1a1a1a;">{title}</h1>
+        <table class="email-card" role="presentation" width="580" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:20px;overflow:hidden;box-shadow:0 6px 32px rgba(120,60,50,.08);">
+          <tr><td style="padding:28px 32px 8px;">
+            {header_logo}
+            <div class="email-eyebrow" style="font-family:Georgia,serif;font-size:11px;letter-spacing:2.4px;text-transform:uppercase;color:{primary};margin-top:14px;">ProClinic</div>
+            <h1 class="email-title" style="font-family:Georgia,'Times New Roman',serif;font-size:24px;line-height:1.25;margin:6px 0 8px;color:#1a1a1a;font-weight:600;">{title}</h1>
           </td></tr>
-          <tr><td style="padding:8px 28px 20px;font-size:14px;line-height:1.6;color:#3a3336;">{body_html}</td></tr>
+          <tr><td class="email-body" style="padding:8px 32px 24px;font-size:15px;line-height:1.65;color:#3a3336;">{body_html}</td></tr>
           {button}
-          <tr><td style="padding:24px 28px;border-top:1px solid #eee;font-size:11px;color:#98908b;text-align:center;">
-            Você recebeu este email porque é administrador de uma clínica no ProClinic. Se não deseja mais receber, responda com "SAIR".
+          <tr><td class="email-meta" style="padding:28px 32px 24px;border-top:1px solid #f0e6df;font-size:11px;color:#98908b;text-align:center;line-height:1.5;">
+            Você recebeu este email porque é administrador de <strong>{brand_name}</strong> no ProClinic.<br/>
+            Se não deseja mais receber, responda com "SAIR".
           </td></tr>
         </table>
+        {pixel}
       </td></tr>
     </table></body></html>"""
 
 
-async def send_email(to: str, subject: str, html: str, idempotency_key: str, attachment: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """Send with idempotency and audit trail. Returns Resend email_id or None on failure."""
+async def send_email(to: str, subject: str, html_builder, idempotency_key: str, attachment: Optional[Dict[str, Any]] = None, clinic_id: Optional[str] = None) -> Optional[str]:
+    """Send with idempotency, branding and tracking. html_builder is a callable(email_log_id, clinic) -> str
+    so we can inject the pre-allocated email_log_id into the HTML for open/click tracking."""
     if not RESEND_API_KEY:
         logger.warning("Skipping email: RESEND_API_KEY not set")
         return None
-    if await db.email_logs.find_one({"idempotency_key": idempotency_key, "status": "sent"}):
+    existing = await db.email_logs.find_one({"idempotency_key": idempotency_key, "status": "sent"})
+    if existing:
+        return None
+    # allocate log id first so tracking pixel URL is known before send
+    email_log_id = f"em_{uuid.uuid4().hex[:12]}"
+    clinic = None
+    if clinic_id:
+        clinic = await db.clinics.find_one({"clinic_id": clinic_id}, {"_id": 0})
+    try:
+        html = html_builder(email_log_id, clinic) if callable(html_builder) else html_builder
+    except Exception as e:
+        logger.error("html_builder failed: %s", e)
         return None
     params = {"from": SENDER_EMAIL, "to": [to], "subject": subject, "html": html}
     if attachment:
         params["attachments"] = [attachment]
     try:
         result = await asyncio.to_thread(resend.Emails.send, params)
-        email_id = (result or {}).get("id")
+        resend_id = (result or {}).get("id")
         await db.email_logs.insert_one({
-            "email_id": f"em_{uuid.uuid4().hex[:12]}", "resend_id": email_id, "to": to,
-            "subject": subject, "idempotency_key": idempotency_key, "status": "sent",
+            "email_id": email_log_id, "resend_id": resend_id, "to": to, "subject": subject,
+            "idempotency_key": idempotency_key, "status": "sent", "clinic_id": clinic_id,
             "sent_at": datetime.now(timezone.utc).isoformat(),
+            "opened_at": None, "clicked_at": None, "click_count": 0,
         })
-        return email_id
+        return email_log_id
     except Exception as e:
         logger.error("Resend send failed: %s", e)
         await db.email_logs.insert_one({
-            "email_id": f"em_{uuid.uuid4().hex[:12]}", "to": to, "subject": subject,
+            "email_id": email_log_id, "to": to, "subject": subject,
             "idempotency_key": idempotency_key, "status": "failed", "error": str(e),
-            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "clinic_id": clinic_id, "sent_at": datetime.now(timezone.utc).isoformat(),
         })
         return None
 
@@ -3539,14 +3591,55 @@ async def send_email_trial_welcome(clinic_id: str):
         return
     key = f"trial_welcome:{clinic_id}"
     frontend = os.environ.get("FRONTEND_URL", "")
-    html = _email_shell(
-        "Bem-vindo(a) ao ProClinic",
-        f"""<p>Olá <strong>{admin.get('name','')}</strong>,</p>
+
+    def _build(email_log_id, clinic):
+        body = f"""<p>Olá <strong>{admin.get('name','')}</strong>,</p>
         <p>Seu teste gratuito de <strong>7 dias</strong> começou. Você tem acesso a todos os recursos do plano <strong>Professional</strong>: agenda, prontuário, documentos digitais, IA clínica e orçamentos.</p>
-        <p>Comece adicionando seus profissionais e cadastrando os primeiros pacientes.</p>""",
-        "Acessar painel", frontend + "/dashboard",
-    )
-    await send_email(admin["email"], "Bem-vindo(a) ao ProClinic — trial ativado", html, key)
+        <p>Nos próximos dias enviaremos algumas dicas para você aproveitar melhor. Comece cadastrando seus profissionais e os primeiros pacientes.</p>"""
+        return _email_shell("Bem-vindo(a) ao ProClinic 🌸", body, "Acessar painel", frontend + "/dashboard",
+                            clinic=clinic, email_log_id=email_log_id, backend_public_url=frontend + "/api")
+    await send_email(admin["email"], "Bem-vindo(a) ao ProClinic — trial ativado", _build, key, clinic_id=clinic_id)
+
+
+async def send_email_trial_day3_features(clinic_id: str):
+    admin = await _admin_of(clinic_id)
+    if not admin:
+        return
+    key = f"trial_day3:{clinic_id}"
+    frontend = os.environ.get("FRONTEND_URL", "")
+
+    def _build(email_log_id, clinic):
+        body = f"""<p>Oi <strong>{admin.get('name','').split(' ')[0]}</strong>,</p>
+        <p>Você já está há 3 dias no ProClinic. Que tal experimentar 3 recursos que muitos clientes amam?</p>
+        <ul style="padding-left:18px;margin:10px 0;">
+          <li><strong>Assistente de IA clínica</strong> — gera evoluções em 5 segundos a partir de um resumo.</li>
+          <li><strong>Documentos jurídicos</strong> — modelos com variáveis dinâmicas + assinatura touch do paciente.</li>
+          <li><strong>Orçamento digital</strong> — envie um link e o paciente aprova pelo celular.</li>
+        </ul>
+        <p>Acesse o painel para experimentar.</p>"""
+        return _email_shell("3 recursos que você ainda não experimentou", body, "Abrir ProClinic", frontend + "/dashboard",
+                            clinic=clinic, email_log_id=email_log_id, backend_public_url=frontend + "/api")
+    await send_email(admin["email"], "3 recursos que vão facilitar sua rotina", _build, key, clinic_id=clinic_id)
+
+
+async def send_email_trial_day5_socialproof(clinic_id: str):
+    admin = await _admin_of(clinic_id)
+    if not admin:
+        return
+    key = f"trial_day5:{clinic_id}"
+    frontend = os.environ.get("FRONTEND_URL", "")
+
+    def _build(email_log_id, clinic):
+        body = f"""<p>Oi <strong>{admin.get('name','').split(' ')[0]}</strong>,</p>
+        <p>Faltam <strong>2 dias</strong> pro seu trial terminar. Se ainda tem dúvida se vale a pena, veja o que outras clínicas conquistaram:</p>
+        <blockquote style="margin:14px 0;padding:12px 16px;border-left:3px solid #B76E79;background:#faf3f0;font-style:italic;color:#5c4b46;">
+          "Reduzi 4h/semana em papelada com os documentos digitais. E a IA acabou com o retrabalho da evolução."<br/>
+          <span style="font-size:12px;font-style:normal;color:#98908b;">— Dra. Fernanda, Clínica Belle Peau</span>
+        </blockquote>
+        <p>Assine agora com o cupom <strong>TRIAL10</strong> e ganhe 10% de desconto no 1º pagamento.</p>"""
+        return _email_shell("O que outras clínicas descobriram no ProClinic", body, "Ver planos", frontend + "/planos",
+                            clinic=clinic, email_log_id=email_log_id, backend_public_url=frontend + "/api")
+    await send_email(admin["email"], "Faltam 2 dias — histórias de clínicas ProClinic", _build, key, clinic_id=clinic_id)
 
 
 async def send_email_trial_expiring(clinic_id: str, days_left: int):
@@ -3555,14 +3648,14 @@ async def send_email_trial_expiring(clinic_id: str, days_left: int):
         return
     key = f"trial_expiring:{clinic_id}:{days_left}"
     frontend = os.environ.get("FRONTEND_URL", "")
-    html = _email_shell(
-        f"Seu trial expira em {days_left} dia(s)",
-        f"""<p>Olá <strong>{admin.get('name','')}</strong>,</p>
-        <p>Seu teste gratuito termina em breve. Assine agora um plano para não perder o acesso e continuar aproveitando tudo o que já configurou.</p>
-        <p>Planos a partir de <strong>R$ 59,90/mês</strong>. Pagamento por PIX, Boleto ou Cartão.</p>""",
-        "Escolher plano", frontend + "/planos",
-    )
-    await send_email(admin["email"], f"Seu trial ProClinic expira em {days_left} dia(s)", html, key)
+
+    def _build(email_log_id, clinic):
+        body = f"""<p>Olá <strong>{admin.get('name','')}</strong>,</p>
+        <p>Seu teste gratuito termina em <strong>{days_left} dia(s)</strong>. Assine agora para não perder o acesso e continuar aproveitando o que já configurou.</p>
+        <p>Planos a partir de <strong>R$ 59,90/mês</strong>. PIX, Boleto ou Cartão.</p>"""
+        return _email_shell(f"Seu trial expira em {days_left} dia(s)", body, "Escolher plano", frontend + "/planos",
+                            clinic=clinic, email_log_id=email_log_id, backend_public_url=frontend + "/api")
+    await send_email(admin["email"], f"Seu trial ProClinic expira em {days_left} dia(s)", _build, key, clinic_id=clinic_id)
 
 
 async def send_email_payment_confirmed(clinic_id: str, payment: Dict[str, Any], invoice_pdf_bytes: Optional[bytes] = None):
@@ -3573,17 +3666,18 @@ async def send_email_payment_confirmed(clinic_id: str, payment: Dict[str, Any], 
     amount_br = f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     key = f"payment_confirmed:{payment.get('id') or payment.get('payment_id')}"
     frontend = os.environ.get("FRONTEND_URL", "")
-    html = _email_shell(
-        "Pagamento confirmado ✓",
-        f"""<p>Recebemos seu pagamento de <strong>R$ {amount_br}</strong>. Seu acesso ao ProClinic está ativo.</p>
-        <p>Uma fatura em PDF segue anexa a este email para seus registros.</p>""",
-        "Ver minha assinatura", frontend + "/minha-assinatura",
-    )
+
+    def _build(email_log_id, clinic):
+        body = f"""<p>Recebemos seu pagamento de <strong>R$ {amount_br}</strong>. Seu acesso ao ProClinic está ativo.</p>
+        <p>A fatura em PDF segue anexa a este email para seus registros.</p>"""
+        return _email_shell("Pagamento confirmado ✓", body, "Ver minha assinatura", frontend + "/minha-assinatura",
+                            clinic=clinic, email_log_id=email_log_id, backend_public_url=frontend + "/api")
+
     import base64
     attachment = None
     if invoice_pdf_bytes:
         attachment = {"filename": "fatura-proclinic.pdf", "content": base64.b64encode(invoice_pdf_bytes).decode("ascii"), "content_type": "application/pdf"}
-    await send_email(admin["email"], "ProClinic — Pagamento confirmado", html, key, attachment=attachment)
+    await send_email(admin["email"], "ProClinic — Pagamento confirmado", _build, key, attachment=attachment, clinic_id=clinic_id)
 
 
 async def send_email_payment_overdue(clinic_id: str):
@@ -3592,14 +3686,14 @@ async def send_email_payment_overdue(clinic_id: str):
         return
     key = f"payment_overdue:{clinic_id}:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
     frontend = os.environ.get("FRONTEND_URL", "")
-    html = _email_shell(
-        "Pagamento em atraso",
-        f"""<p>Olá <strong>{admin.get('name','')}</strong>,</p>
+
+    def _build(email_log_id, clinic):
+        body = f"""<p>Olá <strong>{admin.get('name','')}</strong>,</p>
         <p>Identificamos que seu pagamento não foi processado. Para manter o acesso, regularize sua assinatura pelo painel.</p>
-        <p>Após <strong>15 dias sem pagamento</strong>, o acesso será suspenso.</p>""",
-        "Regularizar agora", frontend + "/minha-assinatura",
-    )
-    await send_email(admin["email"], "ProClinic — Pagamento em atraso", html, key)
+        <p>Após <strong>15 dias sem pagamento</strong>, o acesso será suspenso.</p>"""
+        return _email_shell("Pagamento em atraso", body, "Regularizar agora", frontend + "/minha-assinatura",
+                            clinic=clinic, email_log_id=email_log_id, backend_public_url=frontend + "/api")
+    await send_email(admin["email"], "ProClinic — Pagamento em atraso", _build, key, clinic_id=clinic_id)
 
 
 # ---------- Invoice PDF ----------
@@ -3667,21 +3761,74 @@ async def list_invoices(user: dict = Depends(get_current_user)):
 
 # ---------- Cron task ----------
 async def trial_check_loop():
-    """Runs hourly. Notifies trial reaching last 1 day. Marks read_only + expired transitions."""
+    """Runs hourly. Sends onboarding emails at day 3 and day 5 of trial, plus day-6 expiring warning."""
     while True:
         try:
             now = datetime.now(timezone.utc)
             async for s in db.subscriptions.find({"status": "trial"}):
                 try:
-                    trial_end = datetime.fromisoformat(s.get("trial_ends_at","").replace("Z", "+00:00"))
-                    hours = (trial_end - now).total_seconds() / 3600
-                    if 20 <= hours <= 28:
+                    trial_end = datetime.fromisoformat(s.get("trial_ends_at", "").replace("Z", "+00:00"))
+                    started = datetime.fromisoformat(s.get("started_at", "").replace("Z", "+00:00"))
+                    hours_since_start = (now - started).total_seconds() / 3600
+                    hours_to_end = (trial_end - now).total_seconds() / 3600
+                    # Day 3 (~ 72h after start), within a 1-hour window
+                    if 68 <= hours_since_start <= 76:
+                        await send_email_trial_day3_features(s["clinic_id"])
+                    # Day 5 (~ 120h after start)
+                    if 116 <= hours_since_start <= 124:
+                        await send_email_trial_day5_socialproof(s["clinic_id"])
+                    # Day 6 (24h before end)
+                    if 20 <= hours_to_end <= 28:
                         await send_email_trial_expiring(s["clinic_id"], 1)
                 except Exception:
                     continue
         except Exception as e:
             logger.warning("trial_check_loop error: %s", e)
         await asyncio.sleep(3600)
+
+
+# ---------- Email tracking (open + click) ----------
+_PIXEL_GIF = (
+    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x01\x00\x00\x00\x00,"
+    b"\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+)
+
+
+@api_router.get("/email-tracking/open/{email_id}.png")
+async def email_open_tracking(email_id: str):
+    """1x1 transparent GIF that records the open event."""
+    try:
+        await db.email_logs.update_one(
+            {"email_id": email_id},
+            {"$set": {"opened_at": datetime.now(timezone.utc).isoformat()},
+             "$inc": {"open_count": 1}},
+        )
+    except Exception:
+        pass
+    return Response(content=_PIXEL_GIF, media_type="image/gif", headers={"Cache-Control": "no-store"})
+
+
+@api_router.get("/email-tracking/click/{email_id}")
+async def email_click_tracking(email_id: str, u: str):
+    """Records click and redirects to the original URL."""
+    try:
+        await db.email_logs.update_one(
+            {"email_id": email_id},
+            {"$set": {"clicked_at": datetime.now(timezone.utc).isoformat()},
+             "$inc": {"click_count": 1}},
+        )
+    except Exception:
+        pass
+    # basic safety: only allow http(s) URLs
+    target = u if u.startswith(("http://", "https://")) else "/"
+    return RedirectResponse(url=target, status_code=302)
+
+
+@api_router.get("/super-admin/email-logs")
+async def super_admin_email_logs(user: dict = Depends(get_current_user), limit: int = 200):
+    require_super_admin(user)
+    docs = await db.email_logs.find({}, {"_id": 0}).sort("sent_at", -1).to_list(limit)
+    return docs
 
 
 # ============================================================

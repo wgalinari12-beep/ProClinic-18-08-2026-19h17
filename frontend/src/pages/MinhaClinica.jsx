@@ -120,6 +120,16 @@ export default function MinhaClinica() {
               </Button>
               <p className="text-[11px] text-muted-foreground mt-2">PNG/JPG/WebP até 12MB. Usada em portais e documentos.</p>
             </div>
+            <div className="ml-auto flex items-center gap-3">
+              <label className="text-[10px] uppercase tracking-wider text-muted-foreground">Cor principal</label>
+              <div className="flex items-center gap-2">
+                <input type="color" value={data.primary_color || "#B76E79"}
+                  onChange={(e) => set("primary_color")(e.target.value)}
+                  className="h-10 w-14 rounded-lg border border-border cursor-pointer bg-transparent"
+                  data-testid="clinic-primary-color" />
+                <div className="h-10 w-10 rounded-lg ring-1 ring-border" style={{ background: data.primary_color || "#B76E79" }} />
+              </div>
+            </div>
           </div>
         </section>
 
