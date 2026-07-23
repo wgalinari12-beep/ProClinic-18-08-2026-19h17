@@ -47,7 +47,7 @@ export default function Financeiro() {
 
   const togglePaid = async (entry) => {
     try {
-      await api.put(`/finance/entries/${entry.entry_id}`, { ...entry, paid: !entry.paid });
+      await api.put(`/finance/entries/${entry.entry_id}`, { paid: !entry.paid });
       await load();
     } catch (err) { toast.error("Erro"); }
   };

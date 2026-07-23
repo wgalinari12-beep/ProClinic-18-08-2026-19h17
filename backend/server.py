@@ -108,6 +108,7 @@ class AppointmentIn(BaseModel):
     professional_name: Optional[str] = None
     professional_color: Optional[str] = None
     procedure: str
+    procedure_id: Optional[str] = None
     start: str  # ISO datetime
     end: str
     status: str = "agendado"  # agendado, confirmado, concluido, cancelado, encaixe, em_atendimento
@@ -169,6 +170,31 @@ class FinancialEntryIn(BaseModel):
     patient_id: Optional[str] = None
     budget_id: Optional[str] = None
     appointment_id: Optional[str] = None
+    procedure_id: Optional[str] = None
+    professional_id: Optional[str] = None
+    cost_center: Optional[str] = None
+    notes: Optional[str] = None
+    installment_group_id: Optional[str] = None
+    installment_number: Optional[int] = None
+    installment_total: Optional[int] = None
+
+
+class FinancialEntryPatch(BaseModel):
+    """PATCH-style partial update — só campos enviados são alterados."""
+    type: Optional[Literal["receita", "despesa"]] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    due_date: Optional[str] = None
+    paid: Optional[bool] = None
+    payment_method: Optional[str] = None
+    patient_id: Optional[str] = None
+    budget_id: Optional[str] = None
+    appointment_id: Optional[str] = None
+    procedure_id: Optional[str] = None
+    professional_id: Optional[str] = None
+    cost_center: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class FinancialEntryOut(FinancialEntryIn):
@@ -716,35 +742,89 @@ async def create_anamnesis(data: AnamnesisIn, user: dict = Depends(get_current_u
 # Finance
 # ============================================================
 @api_router.get("/finance/entries")
-async def list_entries(user: dict = Depends(get_current_user)):
-    docs = await db.financial_entries.find(
-        {"clinic_id": user["clinic_id"]}, {"_id": 0}
-    ).sort("due_date", -1).to_list(1000)
+async def list_entries(
+    user: dict = Depends(get_current_user),
+    patient_id: Optional[str] = None,
+    type: Optional[Literal["receita", "despesa"]] = None,
+    paid: Optional[bool] = None,
+    date_from: Optional[str] = None,       # YYYY-MM-DD inclusive
+    date_to: Optional[str] = None,         # YYYY-MM-DD inclusive
+    installment_group_id: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 1000,
+):
+    require_finance_read(user)
+    q: Dict[str, Any] = {"clinic_id": user["clinic_id"]}
+    if patient_id:
+        q["patient_id"] = patient_id
+    if type:
+        q["type"] = type
+    if paid is not None:
+        q["paid"] = paid
+    if installment_group_id:
+        q["installment_group_id"] = installment_group_id
+    if date_from or date_to:
+        rng: Dict[str, str] = {}
+        if date_from:
+            rng["$gte"] = date_from
+        if date_to:
+            rng["$lte"] = date_to
+        q["due_date"] = rng
+    if search:
+        rx = {"$regex": re.escape(search), "$options": "i"}
+        q["$or"] = [{"description": rx}, {"category": rx}, {"notes": rx}]
+    docs = await db.financial_entries.find(q, {"_id": 0}).sort("due_date", -1).limit(min(max(1, limit), 5000)).to_list(limit)
     return docs
 
 
 @api_router.post("/finance/entries")
 async def create_entry(data: FinancialEntryIn, user: dict = Depends(get_current_user)):
+    require_finance_write(user)
     entry_id = f"fin_{uuid.uuid4().hex[:12]}"
+    now_iso = datetime.now(timezone.utc).isoformat()
     doc = data.model_dump()
     doc.update({
         "entry_id": entry_id,
         "clinic_id": user["clinic_id"],
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now_iso,
+        "created_by": user["user_id"],
+        "updated_at": now_iso,
     })
+    if doc.get("paid") and not doc.get("paid_at"):
+        doc["paid_at"] = now_iso
+    # single-entry defaults for installment metadata (None → default)
+    if doc.get("installment_group_id") is None:
+        doc["installment_group_id"] = entry_id
+    if doc.get("installment_number") is None:
+        doc["installment_number"] = 1
+    if doc.get("installment_total") is None:
+        doc["installment_total"] = 1
     await db.financial_entries.insert_one(doc)
     doc.pop("_id", None)
     return doc
 
 
 @api_router.put("/finance/entries/{entry_id}")
-async def update_entry(entry_id: str, data: FinancialEntryIn, user: dict = Depends(get_current_user)):
-    res = await db.financial_entries.update_one(
-        {"entry_id": entry_id, "clinic_id": user["clinic_id"]},
-        {"$set": data.model_dump()},
+async def update_entry(entry_id: str, data: FinancialEntryPatch, user: dict = Depends(get_current_user)):
+    require_finance_write(user)
+    existing = await db.financial_entries.find_one(
+        {"entry_id": entry_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
     )
-    if res.matched_count == 0:
+    if not existing:
         raise HTTPException(status_code=404, detail="Lançamento não encontrado")
+    changes = data.model_dump(exclude_unset=True)
+    # paid_at bookkeeping
+    if "paid" in changes:
+        if changes["paid"] and not existing.get("paid_at"):
+            changes["paid_at"] = datetime.now(timezone.utc).isoformat()
+        elif changes["paid"] is False:
+            changes["paid_at"] = None
+    changes["updated_at"] = datetime.now(timezone.utc).isoformat()
+    changes["updated_by"] = user["user_id"]
+    await db.financial_entries.update_one(
+        {"entry_id": entry_id, "clinic_id": user["clinic_id"]},
+        {"$set": changes},
+    )
     doc = await db.financial_entries.find_one(
         {"entry_id": entry_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
     )
@@ -753,6 +833,7 @@ async def update_entry(entry_id: str, data: FinancialEntryIn, user: dict = Depen
 
 @api_router.delete("/finance/entries/{entry_id}")
 async def delete_entry(entry_id: str, user: dict = Depends(get_current_user)):
+    require_finance_write(user)
     await db.financial_entries.delete_one(
         {"entry_id": entry_id, "clinic_id": user["clinic_id"]}
     )
@@ -761,9 +842,10 @@ async def delete_entry(entry_id: str, user: dict = Depends(get_current_user)):
 
 @api_router.get("/finance/summary")
 async def finance_summary(user: dict = Depends(get_current_user)):
+    require_finance_read(user)
     docs = await db.financial_entries.find(
         {"clinic_id": user["clinic_id"]}, {"_id": 0}
-    ).to_list(2000)
+    ).to_list(5000)
     receitas = sum(d["amount"] for d in docs if d["type"] == "receita" and d.get("paid"))
     despesas = sum(d["amount"] for d in docs if d["type"] == "despesa" and d.get("paid"))
     a_receber = sum(d["amount"] for d in docs if d["type"] == "receita" and not d.get("paid"))
@@ -1445,9 +1527,11 @@ class FinalizeAttendanceIn(BaseModel):
     payment_status: Optional[Literal["pago", "parcial", "nao_pago"]] = None
     amount_total: Optional[float] = None       # if not provided, uses appt.price or budget.total
     amount_paid: Optional[float] = None        # required for parcial
-    payment_method: Optional[str] = None       # pix | cartão | dinheiro | boleto
+    payment_method: Optional[str] = None       # pix | cartão | dinheiro | boleto | parcelado
     budget_id: Optional[str] = None            # link to a budget if any
-    due_date: Optional[str] = None             # for parcial/nao_pago balance
+    due_date: Optional[str] = None             # for parcial/nao_pago balance (first installment)
+    installments: int = 1                      # ⭐ intelligent installments (1..48)
+    installment_interval_days: int = 30        # spacing between due dates
 
 
 @api_router.post("/attendance/{session_id}/finalize")
@@ -1511,20 +1595,25 @@ async def finalize_attendance(
             )
             if budget_doc:
                 total = budget_doc.get("total")
+        appt_doc = None
+        if sess.get("appointment_id"):
+            appt_doc = await db.appointments.find_one(
+                {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
+                {"_id": 0},
+            )
         if total is None and payload.amount_total is not None:
             total = float(payload.amount_total)
-        if total is None and sess.get("appointment_id"):
-            apt = await db.appointments.find_one(
-                {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
-                {"_id": 0, "price": 1},
-            )
-            if apt:
-                total = float(apt.get("price") or 0)
+        if total is None and appt_doc:
+            total = float(appt_doc.get("price") or 0)
         total = float(total or 0)
 
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         category = "Procedimentos"
         description = f"{sess.get('procedure') or 'Atendimento'} — {sess.get('patient_name') or ''}".strip(" —")
+        # enrich professional_id + procedure_id from appointment or session
+        procedure_id_ctx = (appt_doc or {}).get("procedure_id") or sess.get("procedure_id")
+        professional_id_ctx = (appt_doc or {}).get("professional_id") or sess.get("professional_id")
+        now_iso = datetime.now(timezone.utc).isoformat()
         base_entry = {
             "clinic_id": user["clinic_id"],
             "type": "receita",
@@ -1532,10 +1621,25 @@ async def finalize_attendance(
             "patient_id": sess["patient_id"],
             "appointment_id": sess.get("appointment_id"),
             "budget_id": payload.budget_id,
+            "procedure_id": procedure_id_ctx,
+            "professional_id": professional_id_ctx,
             "payment_method": payload.payment_method,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": now_iso,
+            "updated_at": now_iso,
             "created_by": user["user_id"],
         }
+
+        n_installments = max(1, min(48, int(payload.installments or 1)))
+        interval_days = max(1, int(payload.installment_interval_days or 30))
+        group_id = f"grp_{uuid.uuid4().hex[:12]}" if n_installments > 1 else None
+
+        def _add_days(iso_ymd: str, days: int) -> str:
+            try:
+                dt = datetime.strptime(iso_ymd, "%Y-%m-%d")
+            except Exception:
+                dt = datetime.now(timezone.utc)
+            return (dt + timedelta(days=days)).strftime("%Y-%m-%d")
+
         if payload.payment_status == "pago":
             entry = {**base_entry,
                      "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
@@ -1543,7 +1647,11 @@ async def finalize_attendance(
                      "amount": total,
                      "due_date": today,
                      "paid": True,
-                     "paid_at": today}
+                     "paid_at": now_iso,
+                     "installment_group_id": None,
+                     "installment_number": 1,
+                     "installment_total": 1}
+            entry["installment_group_id"] = entry["entry_id"]
             await db.financial_entries.insert_one(entry)
             fin_created.append(entry["entry_id"])
         elif payload.payment_status == "parcial":
@@ -1558,27 +1666,49 @@ async def finalize_attendance(
                       "amount": paid_amt,
                       "due_date": today,
                       "paid": True,
-                      "paid_at": today}
+                      "paid_at": now_iso}
+                e1["installment_group_id"] = group_id or e1["entry_id"]
+                e1["installment_number"] = 0  # entrada
+                e1["installment_total"] = n_installments
                 await db.financial_entries.insert_one(e1)
                 fin_created.append(e1["entry_id"])
             if balance > 0:
-                e2 = {**base_entry,
-                      "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
-                      "description": f"{description} (saldo)",
-                      "amount": balance,
-                      "due_date": payload.due_date or today,
-                      "paid": False}
-                await db.financial_entries.insert_one(e2)
-                fin_created.append(e2["entry_id"])
+                # Split balance into n_installments
+                base_first_due = payload.due_date or _add_days(today, interval_days)
+                per_installment = round(balance / n_installments, 2)
+                remainder = round(balance - per_installment * n_installments, 2)
+                for i in range(n_installments):
+                    amt = per_installment + (remainder if i == n_installments - 1 else 0)
+                    due = _add_days(base_first_due, i * interval_days)
+                    ei = {**base_entry,
+                          "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+                          "description": f"{description} (parcela {i+1}/{n_installments})" if n_installments > 1 else f"{description} (saldo)",
+                          "amount": amt,
+                          "due_date": due,
+                          "paid": False,
+                          "installment_group_id": group_id or f"grp_{uuid.uuid4().hex[:12]}",
+                          "installment_number": i + 1,
+                          "installment_total": n_installments}
+                    await db.financial_entries.insert_one(ei)
+                    fin_created.append(ei["entry_id"])
         elif payload.payment_status == "nao_pago":
-            entry = {**base_entry,
-                     "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
-                     "description": description,
-                     "amount": total,
-                     "due_date": payload.due_date or today,
-                     "paid": False}
-            await db.financial_entries.insert_one(entry)
-            fin_created.append(entry["entry_id"])
+            base_first_due = payload.due_date or today
+            per_installment = round(total / n_installments, 2)
+            remainder = round(total - per_installment * n_installments, 2)
+            for i in range(n_installments):
+                amt = per_installment + (remainder if i == n_installments - 1 else 0)
+                due = _add_days(base_first_due, i * interval_days)
+                ei = {**base_entry,
+                      "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+                      "description": f"{description} (parcela {i+1}/{n_installments})" if n_installments > 1 else description,
+                      "amount": amt,
+                      "due_date": due,
+                      "paid": False,
+                      "installment_group_id": group_id or f"grp_{uuid.uuid4().hex[:12]}",
+                      "installment_number": i + 1,
+                      "installment_total": n_installments}
+                await db.financial_entries.insert_one(ei)
+                fin_created.append(ei["entry_id"])
 
         # link budget → approved
         if budget_doc:
@@ -1731,6 +1861,82 @@ async def delete_budget(budget_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+@api_router.post("/budgets/{budget_id}/generate-charges")
+async def generate_charges_from_budget(
+    budget_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Após um orçamento aprovado (via link público ou manualmente), a clínica revisa
+    e dispara a geração das cobranças financeiras (parcelas). Idempotente por budget_id."""
+    require_finance_write(user)
+    doc = await db.budgets.find_one(
+        {"budget_id": budget_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+    if doc.get("status") != "aprovado":
+        raise HTTPException(status_code=400, detail="Orçamento não está aprovado")
+    # Idempotência: se já existem entries para este budget, retorna elas.
+    existing = await db.financial_entries.find(
+        {"clinic_id": user["clinic_id"], "budget_id": budget_id}, {"_id": 0}
+    ).to_list(200)
+    if existing:
+        return {"ok": True, "financial_entries": [e["entry_id"] for e in existing], "already_generated": True}
+
+    payload = payload or {}
+    total = float(doc.get("total") or 0)
+    n_installments = max(1, min(48, int(payload.get("installments") or doc.get("installments") or 1)))
+    interval_days = max(1, int(payload.get("installment_interval_days") or 30))
+    first_due = payload.get("first_due_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    payment_method = payload.get("payment_method") or doc.get("payment_method")
+
+    def _add_days(iso_ymd: str, days: int) -> str:
+        try:
+            dt = datetime.strptime(iso_ymd, "%Y-%m-%d")
+        except Exception:
+            dt = datetime.now(timezone.utc)
+        return (dt + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    group_id = f"grp_{uuid.uuid4().hex[:12]}"
+    per = round(total / n_installments, 2) if n_installments else total
+    remainder = round(total - per * n_installments, 2)
+    created: List[str] = []
+    description_base = f"Orçamento {budget_id[:8]} — {doc.get('patient_name') or ''}".strip(" —")
+    for i in range(n_installments):
+        amt = per + (remainder if i == n_installments - 1 else 0)
+        due = _add_days(first_due, i * interval_days)
+        ei = {
+            "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+            "clinic_id": user["clinic_id"],
+            "type": "receita",
+            "category": "Procedimentos",
+            "description": f"{description_base} (parcela {i+1}/{n_installments})" if n_installments > 1 else description_base,
+            "amount": amt,
+            "due_date": due,
+            "paid": False,
+            "patient_id": doc.get("patient_id"),
+            "appointment_id": doc.get("appointment_id"),
+            "budget_id": budget_id,
+            "payment_method": payment_method,
+            "installment_group_id": group_id,
+            "installment_number": i + 1,
+            "installment_total": n_installments,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "created_by": user["user_id"],
+        }
+        await db.financial_entries.insert_one(ei)
+        created.append(ei["entry_id"])
+
+    await db.budgets.update_one(
+        {"budget_id": budget_id, "clinic_id": user["clinic_id"]},
+        {"$set": {"pending_charge_generation": False, "charges_generated_at": now_iso}},
+    )
+    return {"ok": True, "financial_entries": created, "already_generated": False}
+
+
 @api_router.get("/budgets/{budget_id}/public-link")
 async def budget_public_link(budget_id: str, user: dict = Depends(get_current_user)):
     forbid_recepcao_clinical(user)
@@ -1782,6 +1988,10 @@ async def sign_public_budget(token: str, payload: Dict[str, Any]):
         "status": "aprovado" if action == "aprovar" else "recusado",
         "responded_at": datetime.now(timezone.utc).isoformat(),
     }
+    if action == "aprovar":
+        # Flag para a clínica revisar e gerar as cobranças (parcelas) manualmente.
+        # A geração automática só acontece via /attendance/{session}/finalize.
+        update["pending_charge_generation"] = True
     if action == "aprovar" and payload.get("signature"):
         update["patient_signature"] = payload["signature"]
     await db.budgets.update_one(
@@ -2234,6 +2444,18 @@ async def mobile_upload_files(token: str):
 def require_admin(user: dict):
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Apenas administradores")
+
+
+def require_finance_read(user: dict):
+    """Leitura financeira: admin, financeiro, recepcao."""
+    if user.get("role") not in {"admin", "financeiro", "recepcao", "super_admin"}:
+        raise HTTPException(status_code=403, detail="Acesso financeiro restrito")
+
+
+def require_finance_write(user: dict):
+    """Escrita/edição/exclusão financeira: admin, financeiro."""
+    if user.get("role") not in {"admin", "financeiro"}:
+        raise HTTPException(status_code=403, detail="Somente admin ou financeiro podem alterar o financeiro")
 
 
 def forbid_recepcao_clinical(user: dict):
@@ -3855,6 +4077,13 @@ async def on_startup():
         await db.webhook_events.create_index("event_id", unique=True)
         await db.coupons.create_index("code", unique=True)
         await db.email_logs.create_index("idempotency_key", unique=True, sparse=True)
+        # ⭐ Finance indexes (Fase 2.5)
+        await db.financial_entries.create_index("entry_id", unique=True)
+        await db.financial_entries.create_index([("clinic_id", 1), ("due_date", -1)])
+        await db.financial_entries.create_index([("clinic_id", 1), ("patient_id", 1)])
+        await db.financial_entries.create_index([("clinic_id", 1), ("paid", 1), ("type", 1)])
+        await db.financial_entries.create_index([("clinic_id", 1), ("installment_group_id", 1)])
+        await db.financial_entries.create_index([("clinic_id", 1), ("budget_id", 1)])
     except Exception:
         pass
     # ensure trial for the demo clinic (idempotent)

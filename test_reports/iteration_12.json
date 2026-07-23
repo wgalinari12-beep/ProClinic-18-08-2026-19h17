@@ -1,0 +1,47 @@
+{
+  "summary": "Phase 2.5A+B — Financeiro overhaul FULLY GREEN. 23/23 backend pytest cases PASS covering RBAC (admin/financeiro write, recepcao read-only, profissional 403, super_admin read), non-destructive PUT (only sent fields change; paid_at auto-populates/clears), filters (type/paid/patient_id/date_from-to/installment_group_id/search + combos), schema defaults (installment_group_id=entry_id, installment_number=1, installment_total=1 when omitted; paid_at on create), intelligent installments end-to-end via /attendance/{sid}/finalize for nao_pago (6 parcelas, same grp_ id, due dates +30d, amounts sum to total, professional_id/procedure_id keys present), parcial (1 entrada installment_number=0 + N parcelas), pago (1 entry with paid_at), backward-compat default installments=1. Budget public approval sets status=aprovado + pending_charge_generation=true and does NOT auto-create financial entries. POST /budgets/{id}/generate-charges creates N entries and is idempotent (returns already_generated=true both when re-called and when a manual entry with the budget_id already exists). Dashboard revenue_month + /finance/summary shape regression OK. Frontend /financeiro loads for admin with KPIs, chart, entries list; new entry via dialog creates and appears; togglePaid PATCH via badge updates status in place without wiping context fields. No console errors, no design breakages.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/finance/entries", "issue": "FinancialEntryIn accepts arbitrary strings in 'category' (intentional per user approval — flagged only for awareness)."},
+      {"endpoint": "GET /api/finance/entries", "issue": "?paid boolean is parsed by FastAPI Query — accepts 'true'/'false'/'1'/'0'. Works fine; noting it's not strictly enforced."},
+      {"endpoint": "POST /api/budgets/{budget_id}/generate-charges", "issue": "Idempotency key is the presence of ANY entry with matching budget_id — even a single manual entry (any amount) blocks generation. Intentional per audit but flag: could confuse users if a manual expense/receita accidentally uses budget_id."},
+      {"endpoint": "POST /api/attendance/{sid}/finalize (payload=None case)", "issue": "When payload is omitted entirely, no financial entries are created (silent). Existing behavior — not a bug — but observers may want a status flag."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Financeiro — Novo lançamento dialog", "issues": ["A11y console warning: 'Missing Description or aria-describedby={undefined} for DialogContent'. Non-blocking — recommend adding DialogDescription for screen-reader parity."]},
+      {"screen": "Financeiro — Recharts container", "issues": ["Console warnings 'width(-1)/height(-1) of chart should be > 0' during first paint. Only during initial mount. Consider giving the ResponsiveContainer parent an explicit minHeight or fixed height on first render."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_5_finance.py",
+    "/app/test_reports/pytest/phase2_5_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Add DialogDescription to Novo Lançamento dialog to remove Radix a11y warning.",
+    "OPTIONAL: Restrict FinancialEntryIn.category to a known enum or add server-side normalization (user approved free-string, so this is purely quality-of-life)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:807-831 update_entry — CORRECT non-destructive PATCH using data.model_dump(exclude_unset=True); paid_at bookkeeping is symmetric (set when paid=True, cleared when paid=False). ",
+    "server.py:1632-1711 finalize_attendance installment engine — correctly clamps to [1..48], divides evenly with remainder absorbed by the last parcela, uses timedelta arithmetic for due dates, and shares a single grp_ installment_group_id across all parcels of a given payment. Entrada (parcial with amount_paid>0) is correctly numbered installment_number=0.",
+    "server.py:1880-1885 generate_charges_from_budget — idempotency by 'any entry with same budget_id exists' is broad but user-approved. Consider tightening to 'entries created by generate-charges' via a source flag if the manual-entry-with-budget_id false-positive becomes a real issue.",
+    "server.py:2449-2458 require_finance_read/write — clean role gates. recepcao read-only, admin+financeiro write, profissional excluded. Matches spec.",
+    "server.py file is 4112 lines — still deserves a router/services split; not a 2.5 blocker.",
+    "Financeiro.jsx:48-53 togglePaid — now correctly sends ONLY {paid: !entry.paid}. Prior full-body PUT was wiping context; the fix is verified end-to-end.",
+    "CompletePaymentDialog.jsx — installments block only visible when status !== 'pago' (correct); intervalDays default 30 and installments default 1 match backend defaults."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_5_finance.py (new — 23 tests)"
+  ],
+  "success_rate": {"backend": "100% (23/23)", "frontend": "100% (Financeiro load + create + toggle-paid + KPIs + chart + entries list all working)"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, ana.recep@proclinic.com/ana123, superadmin@proclinic.com/super123 — ALL verified working.",
+  "seed_data_creation": "Tests create ephemeral finance entries (all TEST_-prefixed), appointments/attendance sessions, and budgets — every one is deleted or ignored on teardown. UI test also created a 'TEST_UI_ENTRY_ZZ' entry and toggled one existing 'Teste Parcelamento parcela 6/6' badge; both side effects were reverted via API after the UI run (entry deleted, badge restored to paid=true).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 2.5A+B backend is 100% green (RBAC + non-destructive PUT + installment engine + generate-charges idempotency + filters + dashboard/summary regression). Frontend Financeiro renders all KPIs/chart/entries and togglePaid uses the fixed PATCH-style body. Next iteration can safely build on these guarantees: (a) FinancialEntryIn schema accepts free-string category by design; (b) installment_group_id auto-populates to entry_id for single entries; (c) generate-charges idempotency triggers on ANY entry sharing the budget_id (broad by design). Test file /app/backend/tests/test_phase2_5_finance.py can be reused as regression for future finance changes.",
+  "rca_of_the_issue": "N/A — all cases passed on first run. No investigation required."
+}

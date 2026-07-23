@@ -24,6 +24,8 @@ export default function CompletePaymentDialog({ open, onOpenChange, defaultTotal
   const [paid, setPaid] = useState(0);
   const [method, setMethod] = useState("pix");
   const [dueDate, setDueDate] = useState("");
+  const [installments, setInstallments] = useState(1);
+  const [intervalDays, setIntervalDays] = useState(30);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -34,6 +36,8 @@ export default function CompletePaymentDialog({ open, onOpenChange, defaultTotal
       setStatus("pago");
       setMethod("pix");
       setDueDate("");
+      setInstallments(1);
+      setIntervalDays(30);
     }
   }, [open, defaultTotal, budgetTotal]);
 
@@ -47,9 +51,16 @@ export default function CompletePaymentDialog({ open, onOpenChange, defaultTotal
         payment_method: method,
         due_date: dueDate || null,
         budget_id: budgetId || null,
+        installments: Number(installments) || 1,
+        installment_interval_days: Number(intervalDays) || 30,
       });
     } finally { setBusy(false); }
   };
+
+  const balance = Math.max(0, Number(total) - (status === "parcial" ? Number(paid) : 0));
+  const perInstallment = installments > 0
+    ? (status === "parcial" ? balance : Number(total)) / Number(installments)
+    : 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -123,6 +134,28 @@ export default function CompletePaymentDialog({ open, onOpenChange, defaultTotal
               <option value="parcelado">Parcelado</option>
             </select>
           </div>
+
+          {status !== "pago" && (
+            <div className="grid grid-cols-2 gap-3 rounded-xl border border-border bg-muted/30 p-3" data-testid="installments-block">
+              <div className="space-y-1.5">
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Parcelas</Label>
+                <Input type="number" min="1" max="48" value={installments}
+                  onChange={(e) => setInstallments(e.target.value)}
+                  className="h-11 rounded-xl" data-testid="pay-installments" />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Intervalo (dias)</Label>
+                <Input type="number" min="1" max="120" value={intervalDays}
+                  onChange={(e) => setIntervalDays(e.target.value)}
+                  className="h-11 rounded-xl" data-testid="pay-interval-days" />
+              </div>
+              {installments > 1 && (
+                <div className="col-span-2 text-[11px] text-muted-foreground">
+                  {Number(installments)}x de <span className="font-mono">{moneyBR(perInstallment)}</span> a cada {intervalDays} dias
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <DialogFooter className="grid grid-cols-2 gap-2">
