@@ -24,6 +24,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depend
 from fastapi.responses import RedirectResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 from pydantic import BaseModel, Field, EmailStr, field_validator
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -801,6 +802,15 @@ async def create_entry(data: FinancialEntryIn, user: dict = Depends(get_current_
         doc["installment_total"] = 1
     await db.financial_entries.insert_one(doc)
     doc.pop("_id", None)
+    # Auto-generate receipt if created already paid (only for receitas)
+    if doc.get("paid") and doc.get("type") == "receita":
+        try:
+            r = await _generate_receipt_for_entry(entry_id, user["clinic_id"])
+            if r:
+                doc["receipt_number"] = r["receipt_number"]
+                doc["receipt_url"] = r["receipt_url"]
+        except Exception as e:
+            logger.warning("auto receipt on create failed: %s", e)
     return doc
 
 
@@ -828,6 +838,19 @@ async def update_entry(entry_id: str, data: FinancialEntryPatch, user: dict = De
     doc = await db.financial_entries.find_one(
         {"entry_id": entry_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
     )
+    # Auto-generate receipt on paid→true transition (only receitas)
+    if (
+        changes.get("paid") is True
+        and existing.get("paid") is not True
+        and doc.get("type") == "receita"
+    ):
+        try:
+            await _generate_receipt_for_entry(entry_id, user["clinic_id"])
+            doc = await db.financial_entries.find_one(
+                {"entry_id": entry_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+            )
+        except Exception as e:
+            logger.warning("auto receipt on PUT failed: %s", e)
     return doc
 
 
@@ -871,6 +894,292 @@ async def finance_summary(user: dict = Depends(get_current_user)):
         "receitas": receitas, "despesas": despesas, "saldo": receitas - despesas,
         "a_receber": a_receber, "a_pagar": a_pagar, "chart": chart,
     }
+
+
+# ============================================================
+# Finance — Patient view + Receipts (Fase 2.5C)
+# ============================================================
+@api_router.get("/finance/patient/{patient_id}/summary")
+async def finance_patient_summary(patient_id: str, user: dict = Depends(get_current_user)):
+    """Financeiro consolidado de UM paciente: totais + próximas cobranças + histórico."""
+    require_finance_read(user)
+    q = {"clinic_id": user["clinic_id"], "patient_id": patient_id}
+    docs = await db.financial_entries.find(q, {"_id": 0}).sort("due_date", -1).to_list(500)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    total_pago = sum(d["amount"] for d in docs if d["type"] == "receita" and d.get("paid"))
+    total_pendente = sum(d["amount"] for d in docs if d["type"] == "receita" and not d.get("paid"))
+    total_vencido = sum(d["amount"] for d in docs if d["type"] == "receita" and not d.get("paid") and (d.get("due_date") or "") < today)
+    pending = [d for d in docs if not d.get("paid")]
+    proximo_vencimento = min((d.get("due_date") for d in pending if d.get("due_date")), default=None)
+    return {
+        "total_pago": total_pago,
+        "total_pendente": total_pendente,
+        "total_vencido": total_vencido,
+        "proximo_vencimento": proximo_vencimento,
+        "count_total": len(docs),
+        "count_pendente": len(pending),
+        "entries": docs,
+    }
+
+
+async def _next_receipt_number(clinic_id: str) -> str:
+    """REC-YYYY-#### sequencial por clínica+ano (atômico)."""
+    year = datetime.now(timezone.utc).year
+    res = await db.receipt_counters.find_one_and_update(
+        {"clinic_id": clinic_id, "year": year},
+        {"$inc": {"next_number": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    seq = int((res or {}).get("next_number", 1))
+    return f"REC-{year}-{seq:04d}"
+
+
+def _build_receipt_pdf(entry: Dict[str, Any], patient: Dict[str, Any], clinic: Dict[str, Any], receipt_number: str) -> bytes:
+    amount = float(entry.get("amount") or 0)
+    amount_br = f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    paid_at_raw = entry.get("paid_at") or entry.get("due_date") or datetime.now(timezone.utc).isoformat()
+    try:
+        paid_dt = datetime.fromisoformat(paid_at_raw.replace("Z", "+00:00")) if "T" in paid_at_raw else datetime.strptime(paid_at_raw, "%Y-%m-%d")
+        paid_str = paid_dt.strftime("%d/%m/%Y")
+    except Exception:
+        paid_str = paid_at_raw[:10]
+    primary = (clinic.get("primary_color") or "#B76E79") if clinic else "#B76E79"
+    clinic_name = (clinic.get("name") if clinic else None) or "ProClinic"
+    clinic_cnpj = (clinic.get("cnpj") if clinic else None) or "—"
+    clinic_addr = (clinic.get("address") if clinic else None) or ""
+    method = (entry.get("payment_method") or "—").upper() if entry.get("payment_method") else "—"
+    parcel_info = ""
+    if entry.get("installment_total") and int(entry["installment_total"]) > 1 and entry.get("installment_number"):
+        parcel_info = f"<div>Parcela {entry['installment_number']}/{entry['installment_total']}</div>"
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      @page {{ size: A4; margin: 22mm 20mm; }}
+      body {{ font-family: Helvetica, Arial, sans-serif; color: #1a1a1a; }}
+      .brand {{ font-family: Georgia, serif; font-size: 11pt; letter-spacing: 3pt; color: {primary}; text-transform: uppercase; }}
+      h1 {{ font-family: Georgia, serif; font-size: 24pt; margin: 2pt 0 6pt; color: #1a1a1a; }}
+      .num {{ font-family: monospace; font-size: 12pt; color: #666; margin-bottom: 24pt; }}
+      .box {{ border: 1px solid #e6ded7; border-radius: 8pt; padding: 14pt 18pt; margin-bottom: 14pt; }}
+      .row {{ display: table; width: 100%; margin: 4pt 0; }}
+      .k {{ display: table-cell; width: 40%; color: #7a7a7a; font-size: 10pt; text-transform: uppercase; letter-spacing: 1pt; }}
+      .v {{ display: table-cell; font-size: 12pt; }}
+      .amount {{ font-family: Georgia, serif; font-size: 32pt; color: {primary}; text-align: right; margin: 20pt 0 4pt; }}
+      .paidbox {{ background: #f2fbef; border: 1px solid #cfe9c4; color: #3d7a2a; padding: 10pt 14pt; border-radius: 8pt; font-size: 11pt; text-align: center; margin: 14pt 0; }}
+      .footer {{ margin-top: 30pt; font-size: 9pt; color: #999; text-align: center; line-height: 1.5; }}
+    </style></head><body>
+      <div class="brand">Recibo de Pagamento</div>
+      <h1>{clinic_name}</h1>
+      <div class="num">Nº <strong>{receipt_number}</strong> · Emitido em {datetime.now(timezone.utc).strftime('%d/%m/%Y')}</div>
+
+      <div class="box">
+        <div class="row"><div class="k">Recebemos de</div><div class="v"><strong>{patient.get('name','—')}</strong></div></div>
+        {'<div class="row"><div class="k">CPF</div><div class="v">' + patient['cpf'] + '</div></div>' if patient.get('cpf') else ''}
+        {'<div class="row"><div class="k">E-mail</div><div class="v">' + patient['email'] + '</div></div>' if patient.get('email') else ''}
+      </div>
+
+      <div class="box">
+        <div class="row"><div class="k">Referente a</div><div class="v">{entry.get('description','—')}</div></div>
+        <div class="row"><div class="k">Categoria</div><div class="v">{entry.get('category','—')}</div></div>
+        <div class="row"><div class="k">Forma de pagamento</div><div class="v">{method}</div></div>
+        <div class="row"><div class="k">Data do pagamento</div><div class="v">{paid_str}</div></div>
+        {parcel_info}
+      </div>
+
+      <div class="amount">R$ {amount_br}</div>
+      <div class="paidbox">✓ Pagamento confirmado</div>
+
+      <div class="footer">
+        <strong>{clinic_name}</strong>{' · CNPJ ' + clinic_cnpj if clinic_cnpj != '—' else ''}<br/>
+        {clinic_addr}<br/>
+        Este recibo é gerado eletronicamente e válido sem assinatura.
+      </div>
+    </body></html>"""
+    buf = io.BytesIO()
+    pisa.CreatePDF(src=html, dest=buf, encoding="utf-8")
+    return buf.getvalue()
+
+
+async def _persist_receipt_pdf(clinic_id: str, receipt_number: str, pdf_bytes: bytes) -> Dict[str, str]:
+    rel_path = f"{APP_NAME}/{clinic_id}/receipts/{receipt_number}.pdf"
+    result = put_object(rel_path, pdf_bytes, "application/pdf")
+    file_id = f"file_{uuid.uuid4().hex[:12]}"
+    sig = make_file_signature(file_id, clinic_id)
+    await db.files.insert_one({
+        "file_id": file_id, "storage_path": result["path"],
+        "original_filename": f"{receipt_number}.pdf", "content_type": "application/pdf",
+        "size": result.get("size", len(pdf_bytes)), "clinic_id": clinic_id,
+        "is_deleted": False, "signature": sig,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"path": result["path"], "url": f"/api/files/{result['path']}?sig={sig}"}
+
+
+async def _generate_receipt_for_entry(entry_id: str, clinic_id: str, force: bool = False) -> Optional[Dict[str, Any]]:
+    """Idempotent: gera recibo apenas quando entry.paid=True e ainda não tem receipt_number
+    (a menos que force=True)."""
+    entry = await db.financial_entries.find_one({"entry_id": entry_id, "clinic_id": clinic_id}, {"_id": 0})
+    if not entry:
+        return None
+    if not entry.get("paid"):
+        return None
+    if entry.get("type") != "receita":
+        return None
+    if entry.get("receipt_number") and not force:
+        return {"receipt_number": entry["receipt_number"], "receipt_url": entry.get("receipt_url")}
+    receipt_number = await _next_receipt_number(clinic_id)
+    patient = {}
+    if entry.get("patient_id"):
+        patient = await db.patients.find_one({"patient_id": entry["patient_id"], "clinic_id": clinic_id}, {"_id": 0}) or {}
+    clinic = await db.clinics.find_one({"clinic_id": clinic_id}, {"_id": 0}) or {}
+    pdf_bytes = _build_receipt_pdf(entry, patient, clinic, receipt_number)
+    stored = await _persist_receipt_pdf(clinic_id, receipt_number, pdf_bytes)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.financial_entries.update_one(
+        {"entry_id": entry_id, "clinic_id": clinic_id},
+        {"$set": {
+            "receipt_number": receipt_number,
+            "receipt_url": stored["url"],
+            "receipt_generated_at": now_iso,
+        }},
+    )
+    return {"receipt_number": receipt_number, "receipt_url": stored["url"]}
+
+
+@api_router.post("/finance/entries/{entry_id}/receipt")
+async def issue_receipt(entry_id: str, force: bool = False, user: dict = Depends(get_current_user)):
+    """Gera ou re-emite o recibo (força regeneração se force=true)."""
+    require_finance_write(user)
+    result = await _generate_receipt_for_entry(entry_id, user["clinic_id"], force=force)
+    if not result:
+        raise HTTPException(status_code=400, detail="Lançamento não elegível para recibo (deve ser receita paga)")
+    return result
+
+
+@api_router.get("/finance/entries/{entry_id}/receipt")
+async def get_receipt(entry_id: str, user: dict = Depends(get_current_user)):
+    require_finance_read(user)
+    entry = await db.financial_entries.find_one({"entry_id": entry_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Lançamento não encontrado")
+    if not entry.get("receipt_number"):
+        # try auto-generate if eligible
+        result = await _generate_receipt_for_entry(entry_id, user["clinic_id"])
+        if not result:
+            raise HTTPException(status_code=404, detail="Recibo ainda não gerado")
+        return result
+    return {"receipt_number": entry["receipt_number"], "receipt_url": entry.get("receipt_url")}
+
+
+@api_router.post("/finance/entries/{entry_id}/receipt/email")
+async def email_receipt(entry_id: str, payload: Optional[Dict[str, Any]] = None, user: dict = Depends(get_current_user)):
+    """Envia o recibo por email para o paciente (ou email custom via payload.email)."""
+    require_finance_write(user)
+    entry = await db.financial_entries.find_one({"entry_id": entry_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Lançamento não encontrado")
+    if not entry.get("paid"):
+        raise HTTPException(status_code=400, detail="Só é possível enviar recibo de lançamento pago")
+    # ensure receipt exists
+    if not entry.get("receipt_number"):
+        await _generate_receipt_for_entry(entry_id, user["clinic_id"])
+        entry = await db.financial_entries.find_one({"entry_id": entry_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+    payload = payload or {}
+    to = (payload.get("email") or "").strip()
+    patient = {}
+    if entry.get("patient_id"):
+        patient = await db.patients.find_one({"patient_id": entry["patient_id"], "clinic_id": user["clinic_id"]}, {"_id": 0}) or {}
+    if not to:
+        to = (patient.get("email") or "").strip()
+    if not to:
+        raise HTTPException(status_code=400, detail="Paciente sem email — informe um destinatário via payload.email")
+    clinic = await db.clinics.find_one({"clinic_id": user["clinic_id"]}, {"_id": 0}) or {}
+    # download pdf bytes
+    pdf_bytes = None
+    try:
+        raw_path = entry["receipt_url"].split("?")[0].replace("/api/files/", "")
+        # need to lookup file storage_path via files collection
+        f_doc = await db.files.find_one({"original_filename": f"{entry['receipt_number']}.pdf", "clinic_id": user["clinic_id"]}, {"_id": 0, "storage_path": 1})
+        if f_doc:
+            fetched = get_object(f_doc["storage_path"])
+            pdf_bytes = fetched[0] if isinstance(fetched, tuple) else fetched
+    except Exception as e:
+        logger.warning("get_object receipt failed: %s", e)
+    if not pdf_bytes:
+        pdf_bytes = _build_receipt_pdf(entry, patient, clinic, entry["receipt_number"])
+    import base64
+    b64 = base64.b64encode(pdf_bytes).decode("ascii") if isinstance(pdf_bytes, (bytes, bytearray)) else None
+
+    amount = float(entry.get("amount") or 0)
+    amount_br = f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    subject = f"Recibo {entry['receipt_number']} — {clinic.get('name') or 'ProClinic'}"
+
+    def _html(email_log_id: Optional[str], clinic_ctx: Dict[str, Any]) -> str:
+        body = f"""
+        <p>Olá <strong>{patient.get('name') or 'cliente'}</strong>,</p>
+        <p>Segue o recibo do seu pagamento no valor de <strong>R$ {amount_br}</strong> referente a <em>{entry.get('description','')}</em>.</p>
+        <p>O recibo em PDF está anexo a este email.</p>
+        <p>Agradecemos pela preferência!</p>"""
+        return _email_shell(
+            title=f"Recibo {entry['receipt_number']}",
+            body_html=body,
+            clinic=clinic_ctx,
+            email_log_id=email_log_id,
+        )
+
+    attachment = None
+    if b64:
+        attachment = {"filename": f"{entry['receipt_number']}.pdf", "content": b64, "content_type": "application/pdf"}
+    idem = f"receipt_email:{entry['entry_id']}:{to}"
+    email_id = await send_email(
+        to=to,
+        subject=subject,
+        html_builder=_html,
+        idempotency_key=idem,
+        attachment=attachment,
+        clinic_id=user["clinic_id"],
+    )
+    await db.financial_entries.update_one(
+        {"entry_id": entry_id, "clinic_id": user["clinic_id"]},
+        {"$set": {"receipt_sent_email_at": datetime.now(timezone.utc).isoformat(), "receipt_sent_email_to": to}},
+    )
+    return {"ok": True, "email_id": email_id, "to": to}
+
+
+@api_router.get("/finance/entries/{entry_id}/receipt/whatsapp-link")
+async def whatsapp_receipt_link(entry_id: str, user: dict = Depends(get_current_user)):
+    """Retorna um link wa.me pronto para o usuário abrir/compartilhar no WhatsApp com o paciente.
+    Não depende da Evolution API — usa o link nativo do WhatsApp."""
+    require_finance_read(user)
+    entry = await db.financial_entries.find_one({"entry_id": entry_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+    if not entry:
+        raise HTTPException(status_code=404, detail="Lançamento não encontrado")
+    if not entry.get("paid"):
+        raise HTTPException(status_code=400, detail="Só é possível compartilhar recibo de lançamento pago")
+    if not entry.get("receipt_number"):
+        await _generate_receipt_for_entry(entry_id, user["clinic_id"])
+        entry = await db.financial_entries.find_one({"entry_id": entry_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+    patient = {}
+    if entry.get("patient_id"):
+        patient = await db.patients.find_one({"patient_id": entry["patient_id"], "clinic_id": user["clinic_id"]}, {"_id": 0}) or {}
+    clinic = await db.clinics.find_one({"clinic_id": user["clinic_id"]}, {"_id": 0}) or {}
+    phone_raw = patient.get("phone") or ""
+    phone_digits = re.sub(r"\D", "", phone_raw)
+    # Prepend BR country code if missing (best-effort)
+    if phone_digits and not phone_digits.startswith("55") and len(phone_digits) in (10, 11):
+        phone_digits = "55" + phone_digits
+    amount = float(entry.get("amount") or 0)
+    amount_br = f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    frontend_url = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    full_url = f"{frontend_url}{entry.get('receipt_url','')}" if entry.get("receipt_url","").startswith("/") else entry.get("receipt_url","")
+    msg = (
+        f"Olá {patient.get('name') or 'cliente'}! Aqui está o seu recibo *{entry['receipt_number']}* "
+        f"no valor de *R$ {amount_br}* referente a: {entry.get('description','')}.\n\n"
+        f"Acesse o PDF: {full_url}\n\n"
+        f"— {clinic.get('name') or 'ProClinic'}"
+    )
+    import urllib.parse
+    encoded = urllib.parse.quote(msg)
+    wa_link = f"https://wa.me/{phone_digits}?text={encoded}" if phone_digits else f"https://wa.me/?text={encoded}"
+    return {"whatsapp_url": wa_link, "phone": phone_digits or None, "receipt_number": entry["receipt_number"]}
 
 
 # ============================================================
@@ -1716,6 +2025,15 @@ async def finalize_attendance(
                 {"budget_id": payload.budget_id},
                 {"$set": {"status": "aprovado", "approved_at": datetime.now(timezone.utc).isoformat()}},
             )
+
+        # Auto-generate receipts for every paid entry created here
+        for eid in fin_created:
+            try:
+                e_doc = await db.financial_entries.find_one({"entry_id": eid, "clinic_id": user["clinic_id"]}, {"_id": 0, "paid": 1, "type": 1})
+                if e_doc and e_doc.get("paid") and e_doc.get("type") == "receita":
+                    await _generate_receipt_for_entry(eid, user["clinic_id"])
+            except Exception as e:
+                logger.warning("auto receipt on finalize failed for %s: %s", eid, e)
 
     return {"ok": True, "record_id": record["record_id"], "financial_entries": fin_created}
 
@@ -4084,6 +4402,8 @@ async def on_startup():
         await db.financial_entries.create_index([("clinic_id", 1), ("paid", 1), ("type", 1)])
         await db.financial_entries.create_index([("clinic_id", 1), ("installment_group_id", 1)])
         await db.financial_entries.create_index([("clinic_id", 1), ("budget_id", 1)])
+        await db.financial_entries.create_index([("clinic_id", 1), ("receipt_number", 1)], sparse=True)
+        await db.receipt_counters.create_index([("clinic_id", 1), ("year", 1)], unique=True)
     except Exception:
         pass
     # ensure trial for the demo clinic (idempotent)

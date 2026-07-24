@@ -14,6 +14,7 @@ import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import BudgetEditor from "@/components/BudgetEditor";
 import DocumentGenerator from "@/components/DocumentGenerator";
+import PatientFinanceTab from "@/components/PatientFinanceTab";
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function PatientDetail() {
@@ -175,6 +176,11 @@ export default function PatientDetail() {
                   <FileSignature className="h-4 w-4 mr-1.5" />Documentos
                 </TabsTrigger>
               )}
+              {(user?.role === "admin" || user?.role === "financeiro" || user?.role === "recepcao") && (
+                <TabsTrigger value="financeiro" data-testid="tab-financeiro" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
+                  <Wallet className="h-4 w-4 mr-1.5" />Financeiro
+                </TabsTrigger>
+              )}
             </TabsList>
 
             <TabsContent value="timeline" className="mt-5">
@@ -323,6 +329,16 @@ export default function PatientDetail() {
                     </table>
                   </div>
                 )}
+              </TabsContent>
+            )}
+
+            {(user?.role === "admin" || user?.role === "financeiro" || user?.role === "recepcao") && (
+              <TabsContent value="financeiro" className="mt-5" data-testid="financeiro-tab-content">
+                <PatientFinanceTab
+                  patientId={id}
+                  patientEmail={patient.email}
+                  patientPhone={patient.phone}
+                />
               </TabsContent>
             )}
           </Tabs>

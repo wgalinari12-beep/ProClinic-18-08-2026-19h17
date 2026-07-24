@@ -70,15 +70,26 @@ Biblioteca de modelos com 16 variáveis dinâmicas, editor markdown + preview, d
 - ✅ **Frontend `Financeiro.jsx`** — `togglePaid` agora envia apenas `{paid}` (não destrói campos internos).
 - ✅ **Backend tests**: 23/23 novos, 0 regressões. Cobertura RBAC + PATCH + filtros + parcelamento (pago/parcial/nao_pago) + generate-charges idempotente.
 
-## P0 backlog — Fase 2.5C+D (próxima)
-- **Aba "Financeiro" em `PatientDetail.jsx`** — histórico financeiro do paciente com totais + pendências.
-- **Endpoint `/api/finance/reports/cashflow?days=30|60|90|180`** — projeção fluxo de caixa por bucket.
-- **Endpoint `/api/finance/reports/dre?from=&to=`** — DRE simplificado (Receitas / Custo Direto / Despesas Operacionais / Resultado).
-- **Refatoração completa da página `Financeiro.jsx`** — filtros avançados na UI, tabela paginada, ações em lote, dialog de detalhes, aba "Parcelas".
-- **Recibos PDF** com numeração sequencial `REC-YYYY-####` + armazenamento em Object Storage.
-- **Arquitetura fiscal** (interfaces/classes placeholder para NF-e/NFSe — sem integração real ainda).
-- **Exports CSV/Excel/PDF** com download imediato + filtros aplicados.
-- **Log de auditoria** de edições financeiras (coleção `financial_audit_logs`).
+### Fase 2.5C — Aba Financeiro Paciente + Recibos PDF Sequenciais (Fev/2026)
+- ✅ **Endpoint `/api/finance/patient/{patient_id}/summary`** — retorna KPIs (`total_pago`, `total_pendente`, `total_vencido`, `proximo_vencimento`) + entries ordenadas.
+- ✅ **Recibos PDF sequenciais** `REC-YYYY-####` — numeração atômica por (clinic_id, year) via `find_one_and_update` + `ReturnDocument.AFTER`. Coleção `receipt_counters` com índice unique.
+- ✅ **Auto-geração de recibo** em 3 pontos: POST `/finance/entries` (create com `paid=true`+`receita`), PUT `/finance/entries/{id}` (transição `paid=false→true`), `POST /attendance/{sid}/finalize` (para entries pagas criadas no finalize).
+- ✅ **Idempotência** — recibo só gerado uma vez; endpoint `POST /finance/entries/{id}/receipt` retorna existente sem duplicar; `?force=true` regenera.
+- ✅ **Endpoint email** `POST /finance/entries/{id}/receipt/email` — usa email do paciente por default, aceita `{email}` no body para custom; anexa PDF via base64; idempotente via Resend + `email_logs`.
+- ✅ **Endpoint WhatsApp** `GET /finance/entries/{id}/receipt/whatsapp-link` — retorna `wa.me/{phone}?text=...` com mensagem pronta + URL do PDF. Prefixa `55` automaticamente em números BR sem código do país. Sem depender de Evolution API.
+- ✅ **PDF de recibo** — layout premium com brand primary color, dados do paciente, descrição, forma de pagamento, valor destacado, "✓ Pagamento confirmado", rodapé com CNPJ e endereço da clínica.
+- ✅ **Frontend `PatientFinanceTab.jsx`** — novo componente (306 linhas) com 4 KPI cards, tabela responsiva, ações inline (Marcar pago / Recibo / Email / WhatsApp), row destacada quando vencida, dialog de custom email.
+- ✅ **`PatientDetail.jsx`** — nova aba "Financeiro" (visível para admin/financeiro/recepcao).
+- ✅ **Índices adicionais**: `(clinic_id, receipt_number)` sparse, `receipt_counters(clinic_id, year)` unique.
+- ✅ **Backend tests**: 26/26 pass (auto-gen, sequência atômica, idempotência, email default+custom, WhatsApp BR prefix, RBAC, patient summary, regressão dashboard/summary/filters/PUT não-destrutivo).
+
+## P0 backlog — Fase 2.5D+ (próxima)
+- **Dashboard Financeiro Avançado** — projeção fluxo de caixa 30/60/90/180 dias + DRE simplificado.
+- **Exports** — CSV/Excel/PDF com filtros aplicados (download imediato).
+- **Refatoração `Financeiro.jsx`** — filtros na UI, tabela paginada, ações em lote, aba "Parcelas".
+- **Widget "Cobranças hoje"** no dashboard principal.
+- **Arquitetura fiscal** — interfaces/classes placeholder NF-e/NFSe.
+- **Log de auditoria** de edições financeiras (`financial_audit_logs`).
 
 ## P0 backlog — Fase 2.3B / paralelo
 - Import DOCX + PDF como modelos.
