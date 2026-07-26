@@ -273,6 +273,7 @@ export default function Agenda() {
       await api.post("/appointments", {
         patient_id: newForm.patient_id,
         procedure: newForm.procedure,
+        procedure_id: proc?.procedure_id || null,
         professional_id: newForm.professional_id || null,
         professional_name: newForm.professional_name,
         professional_color: newForm.professional_color,

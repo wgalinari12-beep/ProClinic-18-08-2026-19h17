@@ -243,6 +243,8 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   };
 
   const confirmFinalize = async (paymentPayload) => {
+    if (busy) return; // ⭐ Problema 1: trava contra reentrada
+    setBusy(true);
     try {
       await api.post(`/attendance/${session.session_id}/finalize`, paymentPayload);
       toast.success("Atendimento concluído e financeiro lançado");
@@ -250,7 +252,9 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       onCompleted?.();
       onOpenChange(false);
     } catch (e) {
-      toast.error("Erro ao finalizar");
+      toast.error(e.response?.data?.detail || "Erro ao finalizar");
+    } finally {
+      setBusy(false);
     }
   };
 

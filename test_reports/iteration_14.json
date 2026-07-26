@@ -1,0 +1,26 @@
+{
+  "summary": "Phase 2.5D — Correção estrutural do módulo de atendimento (P1 idempotência, P2 status transitions, P3 session_id/session_number, P4 procedure_id). 21/21 testes PASSED em novo arquivo test_phase2_5d_attendance.py + regressão dos 49 testes das fases 2.5A/B/C (finance + receipts) mantida 100% verde. Todos os 4 problemas críticos da auditoria estão corrigidos e verificados end-to-end via HTTP contra a URL pública.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_5d_attendance.py",
+    "/app/test_reports/pytest/phase2_5d_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py já >4500 linhas — considerar split em modules (attendance, finance, medical_records, budgets) para manutenibilidade.",
+    "finalize_attendance: o lock via campo booleano 'finalizing' funciona no Mongo single-instance, mas em cenário distribuído/concorrência extrema, o gap entre lock_res.matched_count==0 e a leitura do finalized_result pode retornar 409 espúrio (janela pequena mas existe). Aceitável para MVP.",
+    "session_counters usa year global por clinic — trocar de ano em produção resetará sequência (comportamento esperado, mas documentar).",
+    "ai/generate aceita status 200/400/422 no teste porque contrato exato depende do payload — recomendável documentar schema oficial."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_5d_attendance.py (novo — 21 testes)"
+  ],
+  "success_rate": {"backend": "100% (21/21 novo + 49/49 regressão anterior)", "frontend": "n/a — testing_type: backend only"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, ana.recep@proclinic.com/ana123 — verificados.",
+  "seed_data_creation": "Múltiplos appointments/sessions/medical_records/financial_entries TEST_ criados durante execução (necessário para validar idempotência e sequência ATT-YYYY-######). Não afeta UX.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Fase 2.5D completa e verde. Idempotência confirmada via segundo POST /finalize retornando MESMO record_id + session_number + financial_entries; contagem de medical_records e financial_entries para o mesmo appointment é exatamente 1 mesmo com payload diferente (10 parcelas ignoradas). Status transitions: em_atendimento → concluido com attendance_started_at/by + finished_at/by + duration_minutes (int). session_number verificado como ATT-2026-###### sequencial (3 finalizações consecutivas +1 cada). procedure_id propaga do POST /appointments para o documento persistido. RBAC intacto (bella 403 em finance, ana 200 GET / 403 POST). POST manual de /medical-records fora do finalize continua OK.",
+  "rca_of_the_issue": "N/A — todas as correções estruturais validadas com sucesso."
+}

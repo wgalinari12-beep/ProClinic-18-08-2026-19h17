@@ -1781,12 +1781,15 @@ async def start_attendance(
     )
     if existing:
         return existing
+    now_iso = datetime.now(timezone.utc).isoformat()
     session = {
         "session_id": f"att_{uuid.uuid4().hex[:12]}",
         "appointment_id": appointment_id,
         "patient_id": apt["patient_id"],
         "patient_name": apt.get("patient_name", ""),
         "procedure": apt.get("procedure"),
+        "procedure_id": apt.get("procedure_id"),                # ⭐ carrega FK
+        "professional_id": apt.get("professional_id"),          # ⭐ carrega FK
         "professional_name": apt.get("professional_name"),
         "clinic_id": user["clinic_id"],
         "status": "rascunho",
@@ -1800,11 +1803,22 @@ async def start_attendance(
         "consent_signature": None,
         "evolution_signature": None,
         "duration_seconds": 0,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": now_iso,
+        "started_by": user["user_id"],                          # ⭐ auditoria
+        "updated_at": now_iso,
     }
     await db.attendance_sessions.insert_one(session)
     session.pop("_id", None)
+    # ⭐ Problema 2: marca o appointment como "em_atendimento"
+    await db.appointments.update_one(
+        {"appointment_id": appointment_id, "clinic_id": user["clinic_id"],
+         "status": {"$nin": ["concluido", "cancelado"]}},
+        {"$set": {
+            "status": "em_atendimento",
+            "attendance_started_at": now_iso,
+            "attendance_started_by": user["user_id"],
+        }},
+    )
     return session
 
 
@@ -1847,151 +1861,234 @@ class FinalizeAttendanceIn(BaseModel):
 async def finalize_attendance(
     session_id: str,
     payload: Optional[FinalizeAttendanceIn] = None,
+    request: Request = None,
     user: dict = Depends(get_current_user),
 ):
     """Finalize: marks session concluida, copies into medical_records, marks appointment concluido,
-    and (optionally) creates financial entry(ies) based on payment_status."""
+    and (optionally) creates financial entry(ies) based on payment_status.
+    ⭐ IDEMPOTENTE: se a sessão já foi finalizada, retorna o resultado cacheado sem duplicar."""
     forbid_recepcao_clinical(user)
     sess = await db.attendance_sessions.find_one(
         {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
     )
     if not sess:
         raise HTTPException(status_code=404, detail="Sessão não encontrada")
-    # create medical record
-    record = {
-        "record_id": f"rec_{uuid.uuid4().hex[:12]}",
-        "clinic_id": user["clinic_id"],
-        "patient_id": sess["patient_id"],
-        "patient_name": sess.get("patient_name"),
-        "procedure": sess.get("procedure") or "Atendimento",
-        "professional_name": sess.get("professional_name"),
-        "evolution": sess.get("evolution") or "",
-        "observations": sess.get("observations") or "",
-        "protocols": sess.get("protocols") or "",
-        "prescriptions": sess.get("prescriptions") or "",
-        "photos_before": sess.get("photos_before") or [],
-        "photos_after": sess.get("photos_after") or [],
-        "signed": bool(sess.get("evolution_signature")),
-        "signature": sess.get("evolution_signature"),
-        "duration_seconds": sess.get("duration_seconds") or 0,
-        "created_by": user["user_id"],
-        "created_by_name": user["name"],
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.medical_records.insert_one(record)
-    record.pop("_id", None)
-    # mark session concluida
-    await db.attendance_sessions.update_one(
-        {"session_id": session_id},
-        {"$set": {"status": "concluido", "finalized_at": record["created_at"]}},
-    )
-    # mark appointment concluido
-    if sess.get("appointment_id"):
-        await db.appointments.update_one(
-            {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
-            {"$set": {"status": "concluido"}},
-        )
 
-    # ===== Automatic financial registration =====
-    fin_created: List[str] = []
-    if payload and payload.payment_status:
-        # determine total: budget total > payload.amount_total > appointment.price > 0
-        total = None
-        budget_doc = None
-        if payload.budget_id:
-            budget_doc = await db.budgets.find_one(
-                {"budget_id": payload.budget_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
-            )
-            if budget_doc:
-                total = budget_doc.get("total")
-        appt_doc = None
+    # ===== IDEMPOTÊNCIA (Fase 2.5D) =====
+    # Se a sessão já foi finalizada, retorna o resultado cacheado — não duplica nada
+    if sess.get("status") == "concluido" and sess.get("finalized_result"):
+        return sess["finalized_result"]
+
+    # Lock transacional: marca "finalizing" imediatamente para bloquear requisições paralelas
+    now_iso = datetime.now(timezone.utc).isoformat()
+    lock_res = await db.attendance_sessions.update_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"],
+         "status": {"$ne": "concluido"}, "finalizing": {"$ne": True}},
+        {"$set": {"finalizing": True, "finalizing_at": now_iso}},
+    )
+    if lock_res.matched_count == 0:
+        # Alguém pegou o lock antes — busca resultado cacheado
+        sess = await db.attendance_sessions.find_one(
+            {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+        )
+        if sess and sess.get("finalized_result"):
+            return sess["finalized_result"]
+        raise HTTPException(status_code=409, detail="Sessão já está sendo finalizada")
+
+    try:
+        # ===== session_number sequencial (Problema 3) =====
+        year = datetime.now(timezone.utc).year
+        counter_res = await db.session_counters.find_one_and_update(
+            {"clinic_id": user["clinic_id"], "year": year},
+            {"$inc": {"next_number": 1}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        seq = int((counter_res or {}).get("next_number", 1))
+        session_number = f"ATT-{year}-{seq:06d}"
+
+        # ===== enrichment para medical_record =====
+        appt_ctx = None
         if sess.get("appointment_id"):
-            appt_doc = await db.appointments.find_one(
+            appt_ctx = await db.appointments.find_one(
                 {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
                 {"_id": 0},
             )
-        if total is None and payload.amount_total is not None:
-            total = float(payload.amount_total)
-        if total is None and appt_doc:
-            total = float(appt_doc.get("price") or 0)
-        total = float(total or 0)
+        professional_id_ctx = (appt_ctx or {}).get("professional_id") or sess.get("professional_id")
+        procedure_id_ctx = (appt_ctx or {}).get("procedure_id") or sess.get("procedure_id")
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        category = "Procedimentos"
-        description = f"{sess.get('procedure') or 'Atendimento'} — {sess.get('patient_name') or ''}".strip(" —")
-        # enrich professional_id + procedure_id from appointment or session
-        procedure_id_ctx = (appt_doc or {}).get("procedure_id") or sess.get("procedure_id")
-        professional_id_ctx = (appt_doc or {}).get("professional_id") or sess.get("professional_id")
-        now_iso = datetime.now(timezone.utc).isoformat()
-        base_entry = {
+        # create medical record (com session_id + session_number + IDs relacionais)
+        record = {
+            "record_id": f"rec_{uuid.uuid4().hex[:12]}",
+            "session_id": session_id,                       # ⭐ vínculo direto (Problema 3)
+            "session_number": session_number,               # ⭐ ATT-YYYY-######
+            "appointment_id": sess.get("appointment_id"),   # ⭐ FK explícita
+            "professional_id": professional_id_ctx,         # ⭐ FK explícita
+            "procedure_id": procedure_id_ctx,               # ⭐ FK ao catálogo
             "clinic_id": user["clinic_id"],
-            "type": "receita",
-            "category": category,
             "patient_id": sess["patient_id"],
-            "appointment_id": sess.get("appointment_id"),
-            "budget_id": payload.budget_id,
-            "procedure_id": procedure_id_ctx,
-            "professional_id": professional_id_ctx,
-            "payment_method": payload.payment_method,
-            "created_at": now_iso,
-            "updated_at": now_iso,
+            "patient_name": sess.get("patient_name"),
+            "procedure": sess.get("procedure") or "Atendimento",
+            "professional_name": sess.get("professional_name"),
+            "evolution": sess.get("evolution") or "",
+            "observations": sess.get("observations") or "",
+            "protocols": sess.get("protocols") or "",
+            "prescriptions": sess.get("prescriptions") or "",
+            "photos_before": sess.get("photos_before") or [],
+            "photos_after": sess.get("photos_after") or [],
+            "signed": bool(sess.get("evolution_signature")),
+            "signature": sess.get("evolution_signature"),
+            "consent_signature": sess.get("consent_signature"),  # ⭐ agora preservado
+            "duration_seconds": sess.get("duration_seconds") or 0,
             "created_by": user["user_id"],
+            "created_by_name": user["name"],
+            "created_at": now_iso,
         }
+        await db.medical_records.insert_one(record)
+        record.pop("_id", None)
 
-        n_installments = max(1, min(48, int(payload.installments or 1)))
-        interval_days = max(1, int(payload.installment_interval_days or 30))
-        group_id = f"grp_{uuid.uuid4().hex[:12]}" if n_installments > 1 else None
+        # mark session concluida
+        duration_min = round((sess.get("duration_seconds") or 0) / 60)
+        await db.attendance_sessions.update_one(
+            {"session_id": session_id},
+            {"$set": {
+                "status": "concluido",
+                "session_number": session_number,
+                "finalized_at": now_iso,
+                "finalized_by": user["user_id"],
+                "finalizing": False,
+            }},
+        )
+        # mark appointment concluido + finished metadata (Problema 2)
+        if sess.get("appointment_id"):
+            await db.appointments.update_one(
+                {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
+                {"$set": {
+                    "status": "concluido",
+                    "finished_at": now_iso,
+                    "finished_by": user["user_id"],
+                    "duration_minutes": duration_min,
+                }},
+            )
 
-        def _add_days(iso_ymd: str, days: int) -> str:
-            try:
-                dt = datetime.strptime(iso_ymd, "%Y-%m-%d")
-            except Exception:
-                dt = datetime.now(timezone.utc)
-            return (dt + timedelta(days=days)).strftime("%Y-%m-%d")
-
-        if payload.payment_status == "pago":
-            entry = {**base_entry,
-                     "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
-                     "description": description,
-                     "amount": total,
-                     "due_date": today,
-                     "paid": True,
-                     "paid_at": now_iso,
-                     "installment_group_id": None,
-                     "installment_number": 1,
-                     "installment_total": 1}
-            entry["installment_group_id"] = entry["entry_id"]
-            await db.financial_entries.insert_one(entry)
-            fin_created.append(entry["entry_id"])
-        elif payload.payment_status == "parcial":
-            paid_amt = float(payload.amount_paid or 0)
-            if paid_amt > total:
-                raise HTTPException(status_code=400, detail="Valor pago não pode ser maior que o total")
-            balance = max(0.0, total - paid_amt)
-            if paid_amt > 0:
-                e1 = {**base_entry,
-                      "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
-                      "description": f"{description} (entrada)",
-                      "amount": paid_amt,
-                      "due_date": today,
-                      "paid": True,
-                      "paid_at": now_iso}
-                e1["installment_group_id"] = group_id or e1["entry_id"]
-                e1["installment_number"] = 0  # entrada
-                e1["installment_total"] = n_installments
-                await db.financial_entries.insert_one(e1)
-                fin_created.append(e1["entry_id"])
-            if balance > 0:
-                # Split balance into n_installments
-                base_first_due = payload.due_date or _add_days(today, interval_days)
-                per_installment = round(balance / n_installments, 2)
-                remainder = round(balance - per_installment * n_installments, 2)
+        # ===== Automatic financial registration =====
+        fin_created: List[str] = []
+        if payload and payload.payment_status:
+            # determine total: budget total > payload.amount_total > appointment.price > 0
+            total = None
+            budget_doc = None
+            if payload.budget_id:
+                budget_doc = await db.budgets.find_one(
+                    {"budget_id": payload.budget_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+                )
+                if budget_doc:
+                    total = budget_doc.get("total")
+            appt_doc = None
+            if sess.get("appointment_id"):
+                appt_doc = await db.appointments.find_one(
+                    {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
+                    {"_id": 0},
+                )
+            if total is None and payload.amount_total is not None:
+                total = float(payload.amount_total)
+            if total is None and appt_doc:
+                total = float(appt_doc.get("price") or 0)
+            total = float(total or 0)
+    
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            category = "Procedimentos"
+            description = f"{sess.get('procedure') or 'Atendimento'} — {sess.get('patient_name') or ''}".strip(" —")
+            # enrich professional_id + procedure_id from appointment or session
+            procedure_id_ctx = (appt_doc or {}).get("procedure_id") or sess.get("procedure_id")
+            professional_id_ctx = (appt_doc or {}).get("professional_id") or sess.get("professional_id")
+            now_iso = datetime.now(timezone.utc).isoformat()
+            base_entry = {
+                "clinic_id": user["clinic_id"],
+                "type": "receita",
+                "category": category,
+                "patient_id": sess["patient_id"],
+                "appointment_id": sess.get("appointment_id"),
+                "budget_id": payload.budget_id,
+                "procedure_id": procedure_id_ctx,
+                "professional_id": professional_id_ctx,
+                "payment_method": payload.payment_method,
+                "created_at": now_iso,
+                "updated_at": now_iso,
+                "created_by": user["user_id"],
+            }
+    
+            n_installments = max(1, min(48, int(payload.installments or 1)))
+            interval_days = max(1, int(payload.installment_interval_days or 30))
+            group_id = f"grp_{uuid.uuid4().hex[:12]}" if n_installments > 1 else None
+    
+            def _add_days(iso_ymd: str, days: int) -> str:
+                try:
+                    dt = datetime.strptime(iso_ymd, "%Y-%m-%d")
+                except Exception:
+                    dt = datetime.now(timezone.utc)
+                return (dt + timedelta(days=days)).strftime("%Y-%m-%d")
+    
+            if payload.payment_status == "pago":
+                entry = {**base_entry,
+                         "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+                         "description": description,
+                         "amount": total,
+                         "due_date": today,
+                         "paid": True,
+                         "paid_at": now_iso,
+                         "installment_group_id": None,
+                         "installment_number": 1,
+                         "installment_total": 1}
+                entry["installment_group_id"] = entry["entry_id"]
+                await db.financial_entries.insert_one(entry)
+                fin_created.append(entry["entry_id"])
+            elif payload.payment_status == "parcial":
+                paid_amt = float(payload.amount_paid or 0)
+                if paid_amt > total:
+                    raise HTTPException(status_code=400, detail="Valor pago não pode ser maior que o total")
+                balance = max(0.0, total - paid_amt)
+                if paid_amt > 0:
+                    e1 = {**base_entry,
+                          "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+                          "description": f"{description} (entrada)",
+                          "amount": paid_amt,
+                          "due_date": today,
+                          "paid": True,
+                          "paid_at": now_iso}
+                    e1["installment_group_id"] = group_id or e1["entry_id"]
+                    e1["installment_number"] = 0  # entrada
+                    e1["installment_total"] = n_installments
+                    await db.financial_entries.insert_one(e1)
+                    fin_created.append(e1["entry_id"])
+                if balance > 0:
+                    # Split balance into n_installments
+                    base_first_due = payload.due_date or _add_days(today, interval_days)
+                    per_installment = round(balance / n_installments, 2)
+                    remainder = round(balance - per_installment * n_installments, 2)
+                    for i in range(n_installments):
+                        amt = per_installment + (remainder if i == n_installments - 1 else 0)
+                        due = _add_days(base_first_due, i * interval_days)
+                        ei = {**base_entry,
+                              "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
+                              "description": f"{description} (parcela {i+1}/{n_installments})" if n_installments > 1 else f"{description} (saldo)",
+                              "amount": amt,
+                              "due_date": due,
+                              "paid": False,
+                              "installment_group_id": group_id or f"grp_{uuid.uuid4().hex[:12]}",
+                              "installment_number": i + 1,
+                              "installment_total": n_installments}
+                        await db.financial_entries.insert_one(ei)
+                        fin_created.append(ei["entry_id"])
+            elif payload.payment_status == "nao_pago":
+                base_first_due = payload.due_date or today
+                per_installment = round(total / n_installments, 2)
+                remainder = round(total - per_installment * n_installments, 2)
                 for i in range(n_installments):
                     amt = per_installment + (remainder if i == n_installments - 1 else 0)
                     due = _add_days(base_first_due, i * interval_days)
                     ei = {**base_entry,
                           "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
-                          "description": f"{description} (parcela {i+1}/{n_installments})" if n_installments > 1 else f"{description} (saldo)",
+                          "description": f"{description} (parcela {i+1}/{n_installments})" if n_installments > 1 else description,
                           "amount": amt,
                           "due_date": due,
                           "paid": False,
@@ -2000,42 +2097,50 @@ async def finalize_attendance(
                           "installment_total": n_installments}
                     await db.financial_entries.insert_one(ei)
                     fin_created.append(ei["entry_id"])
-        elif payload.payment_status == "nao_pago":
-            base_first_due = payload.due_date or today
-            per_installment = round(total / n_installments, 2)
-            remainder = round(total - per_installment * n_installments, 2)
-            for i in range(n_installments):
-                amt = per_installment + (remainder if i == n_installments - 1 else 0)
-                due = _add_days(base_first_due, i * interval_days)
-                ei = {**base_entry,
-                      "entry_id": f"fin_{uuid.uuid4().hex[:12]}",
-                      "description": f"{description} (parcela {i+1}/{n_installments})" if n_installments > 1 else description,
-                      "amount": amt,
-                      "due_date": due,
-                      "paid": False,
-                      "installment_group_id": group_id or f"grp_{uuid.uuid4().hex[:12]}",
-                      "installment_number": i + 1,
-                      "installment_total": n_installments}
-                await db.financial_entries.insert_one(ei)
-                fin_created.append(ei["entry_id"])
+    
+            # link budget → approved
+            if budget_doc:
+                await db.budgets.update_one(
+                    {"budget_id": payload.budget_id},
+                    {"$set": {"status": "aprovado", "approved_at": datetime.now(timezone.utc).isoformat()}},
+                )
+    
+            # Auto-generate receipts for every paid entry created here
+            for eid in fin_created:
+                try:
+                    e_doc = await db.financial_entries.find_one({"entry_id": eid, "clinic_id": user["clinic_id"]}, {"_id": 0, "paid": 1, "type": 1})
+                    if e_doc and e_doc.get("paid") and e_doc.get("type") == "receita":
+                        await _generate_receipt_for_entry(eid, user["clinic_id"])
+                except Exception as e:
+                    logger.warning("auto receipt on finalize failed for %s: %s", eid, e)
 
-        # link budget → approved
-        if budget_doc:
-            await db.budgets.update_one(
-                {"budget_id": payload.budget_id},
-                {"$set": {"status": "aprovado", "approved_at": datetime.now(timezone.utc).isoformat()}},
-            )
-
-        # Auto-generate receipts for every paid entry created here
-        for eid in fin_created:
-            try:
-                e_doc = await db.financial_entries.find_one({"entry_id": eid, "clinic_id": user["clinic_id"]}, {"_id": 0, "paid": 1, "type": 1})
-                if e_doc and e_doc.get("paid") and e_doc.get("type") == "receita":
-                    await _generate_receipt_for_entry(eid, user["clinic_id"])
-            except Exception as e:
-                logger.warning("auto receipt on finalize failed for %s: %s", eid, e)
-
-    return {"ok": True, "record_id": record["record_id"], "financial_entries": fin_created}
+        # Cache o resultado no session para idempotência de re-chamadas
+        result = {
+            "ok": True,
+            "record_id": record["record_id"],
+            "session_number": session_number,
+            "financial_entries": fin_created,
+        }
+        await db.attendance_sessions.update_one(
+            {"session_id": session_id, "clinic_id": user["clinic_id"]},
+            {"$set": {"finalized_result": result}},
+        )
+        return result
+    except HTTPException:
+        # Libera o lock em erro de negócio
+        await db.attendance_sessions.update_one(
+            {"session_id": session_id, "clinic_id": user["clinic_id"], "status": {"$ne": "concluido"}},
+            {"$set": {"finalizing": False}},
+        )
+        raise
+    except Exception as e:
+        # Libera o lock em erro inesperado
+        logger.exception("finalize_attendance failed: %s", e)
+        await db.attendance_sessions.update_one(
+            {"session_id": session_id, "clinic_id": user["clinic_id"], "status": {"$ne": "concluido"}},
+            {"$set": {"finalizing": False}},
+        )
+        raise HTTPException(status_code=500, detail=f"Erro ao finalizar: {str(e)}")
 
 
 @api_router.get("/attendance/by-appointment/{appointment_id}")
@@ -4404,6 +4509,12 @@ async def on_startup():
         await db.financial_entries.create_index([("clinic_id", 1), ("budget_id", 1)])
         await db.financial_entries.create_index([("clinic_id", 1), ("receipt_number", 1)], sparse=True)
         await db.receipt_counters.create_index([("clinic_id", 1), ("year", 1)], unique=True)
+        # ⭐ Problemas 1, 3: idempotência e session_number
+        await db.session_counters.create_index([("clinic_id", 1), ("year", 1)], unique=True)
+        await db.attendance_sessions.create_index("session_id", unique=True)
+        await db.attendance_sessions.create_index([("clinic_id", 1), ("appointment_id", 1)])
+        await db.medical_records.create_index([("clinic_id", 1), ("session_id", 1)], sparse=True)
+        await db.medical_records.create_index([("clinic_id", 1), ("patient_id", 1)])
     except Exception:
         pass
     # ensure trial for the demo clinic (idempotent)
