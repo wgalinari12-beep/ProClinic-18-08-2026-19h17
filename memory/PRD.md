@@ -83,13 +83,24 @@ Biblioteca de modelos com 16 variáveis dinâmicas, editor markdown + preview, d
 - ✅ **Índices adicionais**: `(clinic_id, receipt_number)` sparse, `receipt_counters(clinic_id, year)` unique.
 - ✅ **Backend tests**: 26/26 pass (auto-gen, sequência atômica, idempotência, email default+custom, WhatsApp BR prefix, RBAC, patient summary, regressão dashboard/summary/filters/PUT não-destrutivo).
 
-## P0 backlog — Fase 2.5D+ (próxima)
+### Fase 2.5D — Correção Estrutural do Módulo de Atendimento (Fev/2026)
+Correção de 4 riscos críticos identificados na auditoria. Todas as mudanças **aditivas**, sem quebrar nada.
+
+- ✅ **P1 Idempotência do `finalize_attendance`** — segundo POST no mesmo `session_id` retorna o resultado cacheado em `attendance_sessions.finalized_result` sem duplicar prontuários/entries/recibos. Lock via campo `finalizing` bloqueia requisições paralelas. Try/except libera lock em caso de erro.
+- ✅ **P2 Status `em_atendimento`** — `/attendance/start` agora seta `appointment.status="em_atendimento"` + `attendance_started_at` + `attendance_started_by`. `/finalize` completa com `finished_at` + `finished_by` + `duration_minutes`.
+- ✅ **P3 `session_id` + `session_number`** — `medical_records` agora carrega: `session_id` (FK à sessão), `session_number` no formato `ATT-YYYY-######` (contador atômico `session_counters` por clínica+ano, sequencial), `appointment_id`, `professional_id`, `procedure_id` e `consent_signature` (que antes era perdido).
+- ✅ **P4 `procedure_id` no appointment** — `Agenda.jsx` passa `procedure_id` do dropdown de procedures ao criar novo appointment. Legacy sem `procedure_id` continua funcionando.
+- ✅ **Frontend `AttendanceDialog`** — `confirmFinalize` com trap `if (busy) return` contra double-click.
+- ✅ **Índices adicionais** — `session_counters(clinic_id, year)` unique, `attendance_sessions.session_id` unique, `medical_records(clinic_id, session_id)` sparse, `medical_records(clinic_id, patient_id)`.
+- ✅ **Backend tests**: 21/21 novos (test_phase2_5d_attendance.py) + 49/49 regressão fases 2.5A/B/C.
+
+## P0 backlog — Fase 2.5E+ (próxima)
 - **Dashboard Financeiro Avançado** — projeção fluxo de caixa 30/60/90/180 dias + DRE simplificado.
-- **Exports** — CSV/Excel/PDF com filtros aplicados (download imediato).
-- **Refatoração `Financeiro.jsx`** — filtros na UI, tabela paginada, ações em lote, aba "Parcelas".
-- **Widget "Cobranças hoje"** no dashboard principal.
-- **Arquitetura fiscal** — interfaces/classes placeholder NF-e/NFSe.
-- **Log de auditoria** de edições financeiras (`financial_audit_logs`).
+- **Exports** — CSV/Excel/PDF com filtros aplicados.
+- **Sprint quick-wins do AttendanceDialog** (auditoria) — preview do recibo, remover código morto, timestamp por assinatura, barra de progresso das abas.
+- **Copiar FichaForm respostas para medical_record** no finalize.
+- **Módulo de comissões** (P1 estrutural).
+- **Refatoração `server.py` (>4500 linhas)** — split por domínio.
 
 ## P0 backlog — Fase 2.3B / paralelo
 - Import DOCX + PDF como modelos.
