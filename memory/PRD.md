@@ -94,13 +94,25 @@ Correção de 4 riscos críticos identificados na auditoria. Todas as mudanças 
 - ✅ **Índices adicionais** — `session_counters(clinic_id, year)` unique, `attendance_sessions.session_id` unique, `medical_records(clinic_id, session_id)` sparse, `medical_records(clinic_id, patient_id)`.
 - ✅ **Backend tests**: 21/21 novos (test_phase2_5d_attendance.py) + 49/49 regressão fases 2.5A/B/C.
 
-## P0 backlog — Fase 2.5E+ (próxima)
+### Fase 2.5E — Hardening e Integridade Operacional (Fev/2026)
+Correções 4-7 do plano de hardening (correções 1-3 já validadas na 2.5D). Todas aditivas.
+
+- ✅ **C3+ `session_id` também em `financial_entries`** — entries geradas no finalize (incluindo todas as parcelas do mesmo grupo) carregam `session_id` + `session_number` para rastreabilidade completa. Novo índice `financial_entries(clinic_id, session_id)` sparse.
+- ✅ **C4/C5 — Metadados forenses de assinatura** — novo endpoint `POST /api/attendance/{sid}/sign` com payload `{type: 'consent'|'evolution', signature, timezone}`. Persiste em `consent_signature_meta` / `evolution_signature_meta`: `signed_at` (server-side UTC), `signed_by`, `signed_by_name`, `timezone` (client-side), `ip` (X-Forwarded-For → fallback request.client.host), `session_id`, `appointment_id`, `patient_id`, `sha256` do base64 da assinatura. Validação: 400 em type/signature inválidos, 404 em session inexistente, 403 para recepção.
+- ✅ **C4 — TCLE preservado no prontuário** — no `finalize`, `consent_signature` + `consent_signature_meta` + `evolution_signature_meta` copiados para `medical_records`. Antes o TCLE era descartado.
+- ✅ **C6 — Código morto removido** — bloco `stage="done"` do `AttendanceDialog.jsx` deletado + imports órfãos (`Save`, `X` do lucide-react).
+- ✅ **C7 — Autosave sem race conditions** — `AbortController` cancela requisição em vôo antes de disparar nova; `client_op_id` guard descarta respostas fora de ordem que sobrescreveriam estado mais novo; identity fields (`appointment_id`, `patient_id`) são imutáveis no PUT (pop server-side).
+- ✅ **Frontend `AttendanceDialog`** — `captureSignature(type, base64)` usa o novo endpoint `/sign` para persistir com metadata; fallback para autosave em caso de falha.
+- ✅ **Backend tests**: 32/32 novos (test_phase2_5e_sign.py) + 21/21 regressão 2.5D. Total: 53/53 verdes.
+
+## P0 backlog — Fase 2.5F+ (próxima)
+- **Modularizar `server.py`** (~4607 linhas) — split em routers (auth, attendance, finance, medical_records, budgets, super_admin).
+- **Pydantic model `SignPayload`** dedicado para `/attendance/{sid}/sign` (hoje usa `Dict[str, Any]`).
 - **Dashboard Financeiro Avançado** — projeção fluxo de caixa 30/60/90/180 dias + DRE simplificado.
 - **Exports** — CSV/Excel/PDF com filtros aplicados.
-- **Sprint quick-wins do AttendanceDialog** (auditoria) — preview do recibo, remover código morto, timestamp por assinatura, barra de progresso das abas.
 - **Copiar FichaForm respostas para medical_record** no finalize.
-- **Módulo de comissões** (P1 estrutural).
-- **Refatoração `server.py` (>4500 linhas)** — split por domínio.
+- **Módulo de comissões** por profissional.
+- **Sprint quick-wins UX**: preview do recibo, barra de progresso das abas, alergias no header do dialog.
 
 ## P0 backlog — Fase 2.3B / paralelo
 - Import DOCX + PDF como modelos.
