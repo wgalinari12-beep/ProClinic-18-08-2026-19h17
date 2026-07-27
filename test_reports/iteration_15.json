@@ -1,0 +1,22 @@
+{
+  "summary": "Phase 2.5E backend hardening validated. 32/32 new tests pass (test_phase2_5e_sign.py) + 21/21 regression from 2.5D pass. Coverage: C3+ (session_id+session_number em financial_entries, incluindo parcelas), C4/C5 (POST /attendance/{sid}/sign happy path + errors + persistence + copy on finalize), C7 (autosave identity fields ignored, partial payload, 422 quando patient_id ausente, last-write-wins), regression (idempotência, status transitions, RBAC full, dashboard, finance, budgets, AI, recibos, medical records).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_5e_sign.py",
+    "/app/backend/tests/test_phase2_5d_attendance.py",
+    "/app/test_reports/pytest/phase25e_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py está com ~4607 linhas — recomenda-se modularizar (auth, attendance, finance, medical_records) em routers separados para reduzir complexidade e melhorar manutenibilidade.",
+    "Endpoint /attendance/{sid}/sign usa Dict[str, Any] no body — recomenda-se criar Pydantic model (SignPayload) com type Literal['consent','evolution'] para validação nativa (evita branch manual)."
+  ],
+  "updated_files": ["/app/backend/tests/test_phase2_5e_sign.py"],
+  "success_rate": {"backend": "100% (53/53)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, ana.recep@proclinic.com/ana123",
+  "seed_data_creation": "Reused existing patient (first from GET /api/patients). Created multiple TEST appointments/sessions for sign+finalize flows. No cleanup needed (test data uses TEST_ prefix where applicable).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 2.5E fully validated. New endpoint POST /api/attendance/{sid}/sign works with SHA256 hash, ISO signed_at, timezone, ip (X-Forwarded-For fallback to request.client.host), signed_by, and echoes session_id/appointment_id/patient_id. On /finalize, both consent_signature/evolution_signature + their _meta dicts are copied to medical_records. financial_entries now contain session_id + session_number (ATT-YYYY-######); installments share group_id + same session_id + session_number. PUT /api/attendance/{sid} pops appointment_id/patient_id server-side. Legacy records/entries without these new fields coexist without breaking listings. Test file: /app/backend/tests/test_phase2_5e_sign.py."
+}

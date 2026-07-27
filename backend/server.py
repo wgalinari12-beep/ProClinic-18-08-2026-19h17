@@ -1824,7 +1824,7 @@ async def start_attendance(
 
 @api_router.put("/attendance/{session_id}")
 async def update_attendance(
-    session_id: str, data: AttendanceSessionIn, user: dict = Depends(get_current_user)
+    session_id: str, data: AttendanceSessionIn, request: Request, user: dict = Depends(get_current_user)
 ):
     """Autosave attendance session draft. Identity fields (appointment_id, patient_id)
     cannot be mutated here — only session content."""
@@ -1844,6 +1844,64 @@ async def update_attendance(
         {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
     )
     return doc
+
+
+@api_router.post("/attendance/{session_id}/sign")
+async def sign_attendance(
+    session_id: str,
+    payload: Dict[str, Any],
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Captura assinatura com METADADOS forenses (Correção 4+5):
+    payload = {type: 'consent'|'evolution', signature: <base64 PNG>, timezone?: str}
+    Persiste também: signed_at (server-side), signed_by (user_id), signed_by_name,
+    ip (best-effort), timezone (client-side), session_id, appointment_id, patient_id, sha256 hash.
+    """
+    forbid_recepcao_clinical(user)
+    sig_type = payload.get("type")
+    signature = payload.get("signature")
+    tz = payload.get("timezone") or "UTC"
+    if sig_type not in {"consent", "evolution"}:
+        raise HTTPException(status_code=400, detail="type deve ser 'consent' ou 'evolution'")
+    if not signature or not isinstance(signature, str) or len(signature) < 100:
+        raise HTTPException(status_code=400, detail="Assinatura vazia ou inválida")
+
+    sess = await db.attendance_sessions.find_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not sess:
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+
+    import hashlib
+    sig_hash = hashlib.sha256(signature.encode("utf-8")).hexdigest()
+    client_ip = None
+    try:
+        # Best-effort — priorizando X-Forwarded-For (proxies)
+        xff = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
+        client_ip = (xff.split(",")[0].strip() if xff else None) or (request.client.host if request.client else None)
+    except Exception:
+        client_ip = None
+    now_iso = datetime.now(timezone.utc).isoformat()
+    meta = {
+        "signed_at": now_iso,
+        "signed_by": user["user_id"],
+        "signed_by_name": user.get("name"),
+        "timezone": tz,
+        "ip": client_ip,
+        "session_id": session_id,
+        "appointment_id": sess.get("appointment_id"),
+        "patient_id": sess.get("patient_id"),
+        "sha256": sig_hash,
+    }
+    field_sig = f"{sig_type}_signature"      # consent_signature | evolution_signature
+    field_meta = f"{sig_type}_signature_meta"  # consent_signature_meta | evolution_signature_meta
+    await db.attendance_sessions.update_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]},
+        {"$set": {field_sig: signature, field_meta: meta,
+                  "updated_at": now_iso}},
+    )
+    return {"ok": True, "meta": meta}
 
 
 class FinalizeAttendanceIn(BaseModel):
@@ -1939,6 +1997,8 @@ async def finalize_attendance(
             "signed": bool(sess.get("evolution_signature")),
             "signature": sess.get("evolution_signature"),
             "consent_signature": sess.get("consent_signature"),  # ⭐ agora preservado
+            "consent_signature_meta": sess.get("consent_signature_meta"),      # ⭐ Correção 4+5
+            "evolution_signature_meta": sess.get("evolution_signature_meta"),  # ⭐ Correção 5
             "duration_seconds": sess.get("duration_seconds") or 0,
             "created_by": user["user_id"],
             "created_by_name": user["name"],
@@ -2008,6 +2068,8 @@ async def finalize_attendance(
                 "category": category,
                 "patient_id": sess["patient_id"],
                 "appointment_id": sess.get("appointment_id"),
+                "session_id": session_id,
+                "session_number": session_number,
                 "budget_id": payload.budget_id,
                 "procedure_id": procedure_id_ctx,
                 "professional_id": professional_id_ctx,
@@ -4515,6 +4577,7 @@ async def on_startup():
         await db.attendance_sessions.create_index([("clinic_id", 1), ("appointment_id", 1)])
         await db.medical_records.create_index([("clinic_id", 1), ("session_id", 1)], sparse=True)
         await db.medical_records.create_index([("clinic_id", 1), ("patient_id", 1)])
+        await db.financial_entries.create_index([("clinic_id", 1), ("session_id", 1)], sparse=True)
     except Exception:
         pass
     # ensure trial for the demo clinic (idempotent)

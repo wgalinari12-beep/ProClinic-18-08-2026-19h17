@@ -8,8 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
-  Clock, AlertCircle, Save, Sparkles, FileSignature, CheckCircle2,
-  ClipboardList, FileText, Pill, Loader2, X, Wallet,
+  Clock, AlertCircle, Sparkles, FileSignature, CheckCircle2,
+  ClipboardList, FileText, Pill, Loader2, Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
 import PhotoUploader from "@/components/PhotoUploader";
@@ -111,37 +111,57 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   }, [stage]);
 
   // Autosave session (debounced) when session changes
+  const abortRef = useRef(null);
+  const opIdRef = useRef(0);
+
+  // Autosave with race-condition protection (Correção 7):
+  // - AbortController cancels in-flight request before firing a new one
+  // - client_op_id guards against stale response overwriting fresher state
   const autosave = (patch) => {
     setSession((s) => ({ ...s, ...patch }));
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
+      const opId = ++opIdRef.current;
+      try { abortRef.current?.abort(); } catch { /* ignore */ }
+      const ctl = new AbortController();
+      abortRef.current = ctl;
       try {
-        const merged = { ...session, ...patch, duration_seconds: seconds };
-        const payload = {
-          patient_id: merged.patient_id,
-          appointment_id: merged.appointment_id,
-          procedure: merged.procedure,
-          professional_name: merged.professional_name,
-          evolution: merged.evolution || "",
-          observations: merged.observations || "",
-          protocols: merged.protocols || "",
-          prescriptions: merged.prescriptions || "",
-          products_used: merged.products_used || "",
-          photos_before: merged.photos_before || [],
-          photos_after: merged.photos_after || [],
-          consent_signature: merged.consent_signature || null,
-          evolution_signature: merged.evolution_signature || null,
-          status: "rascunho",
-          duration_seconds: seconds,
-        };
-        const { data } = await api.put(`/attendance/${session.session_id}`, payload);
-        setSession(data);
-        setSavedAt(new Date());
-      } catch { /* silent */ }
+        const { data } = await api.put(
+          `/attendance/${session.session_id}`,
+          { patient_id: session.patient_id, ...patch, duration_seconds: seconds, status: "rascunho" },
+          { signal: ctl.signal }
+        );
+        // Only accept the response if this is still the latest op
+        if (opId === opIdRef.current) {
+          setSession((s) => ({ ...s, ...data }));
+          setSavedAt(new Date());
+        }
+      } catch (err) {
+        if (err.name !== "CanceledError" && err.name !== "AbortError") {
+          // Silent retry-on-next-change model — user will trigger new save
+        }
+      }
     }, 800);
   };
 
   const setSessionField = (k, v) => autosave({ [k]: v });
+
+  // Signature capture with forensic metadata (Correção 4+5)
+  const captureSignature = async (type, base64) => {
+    // Update local state immediately for responsive UI
+    setSession((s) => ({ ...s, [`${type}_signature`]: base64 }));
+    if (!base64 || !session?.session_id) return;
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      await api.post(`/attendance/${session.session_id}/sign`, {
+        type, signature: base64, timezone: tz,
+      });
+      setSavedAt(new Date());
+    } catch {
+      // Fallback: mantém no autosave normal
+      autosave({ [`${type}_signature`]: base64 });
+    }
+  };
 
   // Reset on close
   useEffect(() => {
@@ -466,7 +486,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                     <SignaturePad
                       testid="consent-signature"
                       value={session.consent_signature}
-                      onChange={(v) => setSessionField("consent_signature", v)}
+                      onChange={(v) => captureSignature("consent", v)}
                     />
                   </div>
                   <div>
@@ -474,7 +494,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                     <SignaturePad
                       testid="evolution-signature"
                       value={session.evolution_signature}
-                      onChange={(v) => setSessionField("evolution_signature", v)}
+                      onChange={(v) => captureSignature("evolution", v)}
                     />
                   </div>
                 </TabsContent>
@@ -482,19 +502,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
             </div>
           )}
 
-          {/* Done */}
-          {stage === "done" && (
-            <div className="p-12 text-center" data-testid="attendance-done">
-              <div className="h-16 w-16 mx-auto rounded-full bg-success/10 ring-1 ring-success/30 flex items-center justify-center">
-                <CheckCircle2 className="h-8 w-8 text-success" strokeWidth={1.5} />
-              </div>
-              <h3 className="font-display text-2xl font-semibold tracking-tight mt-4">Atendimento concluído</h3>
-              <p className="text-sm text-muted-foreground mt-1">Tudo foi registrado no prontuário do paciente.</p>
-              <Button onClick={() => onOpenChange(false)} className="mt-6 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90">
-                Fechar
-              </Button>
-            </div>
-          )}
+          {/* Done state removed (Correção 6): confirmFinalize closes the dialog directly. */}
         </div>
 
         {/* Footer actions */}
