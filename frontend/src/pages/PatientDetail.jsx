@@ -8,13 +8,14 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   ArrowLeft, Phone, Mail, MapPin, AlertTriangle, CalendarDays,
-  FileText, ClipboardList, Image as ImageIcon, Cake, Wallet, FileSignature, ExternalLink,
+  FileText, ClipboardList, Image as ImageIcon, Cake, Wallet, FileSignature, ExternalLink, Activity,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import BudgetEditor from "@/components/BudgetEditor";
 import DocumentGenerator from "@/components/DocumentGenerator";
 import PatientFinanceTab from "@/components/PatientFinanceTab";
+import PatientClinicalTimeline from "@/components/PatientClinicalTimeline";
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function PatientDetail() {
@@ -161,6 +162,9 @@ export default function PatientDetail() {
                   <TabsTrigger value="prontuario" data-testid="tab-prontuario" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                     <FileText className="h-4 w-4 mr-1.5" />Prontuário
                   </TabsTrigger>
+                  <TabsTrigger value="clinica" data-testid="tab-clinica" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
+                    <Activity className="h-4 w-4 mr-1.5" />Clínica
+                  </TabsTrigger>
                   <TabsTrigger value="anamnese" data-testid="tab-anamnese" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                     <ClipboardList className="h-4 w-4 mr-1.5" />Anamnese
                   </TabsTrigger>
@@ -229,6 +233,10 @@ export default function PatientDetail() {
                   ))}
                 </div>
               )}
+            </TabsContent>
+
+            <TabsContent value="clinica" className="mt-5" data-testid="clinica-tab-content">
+              {!canClinical ? null : <PatientClinicalTimeline patientId={id} />}
             </TabsContent>
 
             <TabsContent value="anamnese" className="mt-5">

@@ -1,0 +1,26 @@
+{
+  "summary": "Phase 2 Integridade Clínica validada: 18/18 novos testes pass (ficha_snapshot + timeline) + 53/53 regressão pass (21 phase 2.5D + 32 phase 2.5E). Total 71/71 (100%). Coverage: ficha_snapshot captura módulos anamnese no finalize (geral/facial/corporal/capilar) com answers+photos+captured_at; snapshot vazio ({}) quando sem módulos; isolamento por created_by para role=profissional; admin captura todos os módulos; GET /patients/{id}/timeline com estrutura completa (patient/sessions/legacy_records/counts); todos os campos por sessão (session_id, session_number ATT-YYYY-######, appointment, medical_record, ficha_snapshot, budget, financial_entries, receipts, signed_documents, signatures com meta); ordenação DESC por started_at; sessions em andamento com medical_record=null e ficha_snapshot em vôo dos anamnesis_modules atuais; RBAC (profissional só vê próprias started_by, admin vê todas); 404 para paciente inexistente; legacy_records (medical_records sem session_id); receipts derivados corretamente de financial_entries; idempotência do finalize preservada (snapshot capturado APENAS na 1a finalização).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_integridade_clinica.py",
+    "/app/backend/tests/test_phase2_5d_attendance.py",
+    "/app/backend/tests/test_phase2_5e_sign.py",
+    "/app/test_reports/pytest/phase2_int_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py continua com ~4748 linhas — recomendação prévia de modularização (auth, attendance, finance, medical_records, timeline) ainda válida.",
+    "Timeline endpoint (linha 2662): `sess.get('session_number') or rec and rec.get('session_number')` — a precedência de `or`/`and` em Python retorna 'rec.get(...)' se rec for truthy, ou False se rec for None. Funciona mas seria mais legível: `sess.get('session_number') or (rec and rec.get('session_number'))`.",
+    "Timeline endpoint sem paginação: hardcoded `.to_list(200)` para sessions e legacy_records. Para pacientes com histórico grande (raro mas possível), o endpoint pode ficar lento — considerar paginação/limit configurável ou lazy-load de artefatos secundários (budget/documents).",
+    "Endpoint GET /patients/{id}/timeline não bloqueia role=recepcao explicitamente (comportamento atual: retorna 200 com dados clínicos). Se recepção não deve ver evolução/prescrições, adicionar forbid_recepcao_clinical(user)."
+  ],
+  "updated_files": ["/app/backend/tests/test_phase2_integridade_clinica.py"],
+  "success_rate": {"backend": "100% (71/71 = 18 novos + 53 regressão)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, dra.lais@proclinic.com/lais123, ana.recep@proclinic.com/ana123",
+  "seed_data_creation": "Criados múltiplos pacientes TEST_SNAP_/TEST_TL_/TEST_IDEMP_ isolados por uuid suffix. Cada teste cria seu próprio patient + appointment + session para evitar dependências. Nenhum cleanup automático (dados TEST_ prefixados identificáveis).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase 2 (Integridade Clínica) totalmente validada. Novos endpoints/comportamentos: (1) POST /attendance/{sid}/finalize agora captura ficha_snapshot dos anamnesis_modules do paciente. Filtro created_by=user_id quando user.role=='profissional' (admin/financeiro sem filtro). Snapshot em medical_record.ficha_snapshot ({geral|facial|corporal|capilar: {module_id, answers, photos, captured_at}}). Vazio = dict {}. (2) GET /api/patients/{patient_id}/timeline retorna estrutura completa. RBAC: profissional filtra por started_by; admin/outros veem tudo. Recepção não é bloqueada (comportamento atual). Legacy = medical_records sem session_id. Test file: /app/backend/tests/test_phase2_integridade_clinica.py.",
+  "rca of the issue": "N/A — nenhum bug encontrado. Todas as features implementadas corretamente e regressões preservadas."
+}

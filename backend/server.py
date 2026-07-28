@@ -1975,7 +1975,26 @@ async def finalize_attendance(
         professional_id_ctx = (appt_ctx or {}).get("professional_id") or sess.get("professional_id")
         procedure_id_ctx = (appt_ctx or {}).get("procedure_id") or sess.get("procedure_id")
 
-        # create medical record (com session_id + session_number + IDs relacionais)
+        # ===== Fase 2 - Integridade Clínica: snapshot da FichaForm =====
+        # Snapshot dos módulos de anamnese (geral/facial/corporal/capilar) do paciente
+        # NO MOMENTO do finalize. Preserva o estado da ficha nesta sessão específica.
+        ficha_query = {"clinic_id": user["clinic_id"], "patient_id": sess["patient_id"]}
+        # Se profissional, restringir aos módulos do próprio profissional
+        if user.get("role") == "profissional":
+            ficha_query["created_by"] = user["user_id"]
+        ficha_docs = await db.anamnesis_modules.find(ficha_query, {"_id": 0}).to_list(20)
+        ficha_snapshot = {}
+        for fd in ficha_docs:
+            mod_name = fd.get("module")
+            if mod_name in {"geral", "facial", "corporal", "capilar"}:
+                ficha_snapshot[mod_name] = {
+                    "module_id": fd.get("module_id"),
+                    "answers": fd.get("answers") or {},
+                    "photos": fd.get("photos") or [],
+                    "captured_at": fd.get("updated_at") or fd.get("created_at"),
+                }
+
+        # create medical record (com session_id + session_number + IDs relacionais + snapshot da ficha)
         record = {
             "record_id": f"rec_{uuid.uuid4().hex[:12]}",
             "session_id": session_id,                       # ⭐ vínculo direto (Problema 3)
@@ -1999,6 +2018,7 @@ async def finalize_attendance(
             "consent_signature": sess.get("consent_signature"),  # ⭐ agora preservado
             "consent_signature_meta": sess.get("consent_signature_meta"),      # ⭐ Correção 4+5
             "evolution_signature_meta": sess.get("evolution_signature_meta"),  # ⭐ Correção 5
+            "ficha_snapshot": ficha_snapshot,                                   # ⭐ Fase 2 (Integridade Clínica)
             "duration_seconds": sess.get("duration_seconds") or 0,
             "created_by": user["user_id"],
             "created_by_name": user["name"],
@@ -2560,6 +2580,127 @@ async def patient_completeness(patient_id: str, user: dict = Depends(get_current
     required = ["name", "cpf", "birth_date", "phone", "lgpd_consent"]
     missing = [k for k in required if not p.get(k)]
     return {"complete": len(missing) == 0, "missing": missing, "patient": p}
+
+
+@api_router.get("/patients/{patient_id}/timeline")
+async def patient_timeline(patient_id: str, user: dict = Depends(get_current_user)):
+    """Timeline clínica consolidada por sessão (Fase 2 - Integridade Clínica).
+    Retorna cada sessão de atendimento do paciente com todos os artefatos relacionados
+    (medical_record, ficha_snapshot, budget, financial_entries, receipts) agrupados
+    e ordenados cronologicamente (mais recentes primeiro)."""
+    # Verificar acesso ao paciente
+    p = await db.patients.find_one(
+        {"patient_id": patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="Paciente não encontrado")
+
+    # RBAC: profissional só vê próprias sessões
+    sess_query: Dict[str, Any] = {"clinic_id": user["clinic_id"], "patient_id": patient_id}
+    if user.get("role") == "profissional":
+        sess_query["started_by"] = user["user_id"]
+
+    sessions = await db.attendance_sessions.find(sess_query, {"_id": 0}).sort("started_at", -1).to_list(200)
+
+    timeline: List[Dict[str, Any]] = []
+    for sess in sessions:
+        sid = sess.get("session_id")
+        # medical record dessa sessão (se já finalizada)
+        rec = await db.medical_records.find_one(
+            {"clinic_id": user["clinic_id"], "session_id": sid}, {"_id": 0}
+        )
+        # appointment
+        appt = None
+        if sess.get("appointment_id"):
+            appt = await db.appointments.find_one(
+                {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
+                {"_id": 0},
+            )
+        # financial entries vinculadas à sessão
+        entries = await db.financial_entries.find(
+            {"clinic_id": user["clinic_id"], "session_id": sid}, {"_id": 0}
+        ).sort("due_date", 1).to_list(50)
+        # budget vinculado ao appointment (se houver)
+        budget = None
+        if sess.get("appointment_id"):
+            budget = await db.budgets.find_one(
+                {"clinic_id": user["clinic_id"], "appointment_id": sess["appointment_id"]},
+                {"_id": 0},
+            )
+        # receipts (extraídos dos entries com receipt_number)
+        receipts = [
+            {"receipt_number": e["receipt_number"], "receipt_url": e.get("receipt_url"),
+             "entry_id": e["entry_id"], "amount": e.get("amount")}
+            for e in entries if e.get("receipt_number")
+        ]
+        # ficha snapshot: do medical_record se existe, senão dos anamnesis_modules em vôo
+        ficha = None
+        if rec and rec.get("ficha_snapshot"):
+            ficha = rec["ficha_snapshot"]
+        else:
+            # Session ainda não finalizada — usa snapshot em vôo dos módulos atuais
+            fq: Dict[str, Any] = {"clinic_id": user["clinic_id"], "patient_id": patient_id}
+            if user.get("role") == "profissional":
+                fq["created_by"] = user["user_id"]
+            mods = await db.anamnesis_modules.find(fq, {"_id": 0}).to_list(20)
+            ficha = {m["module"]: {
+                "answers": m.get("answers") or {},
+                "photos": m.get("photos") or [],
+                "captured_at": m.get("updated_at") or m.get("created_at"),
+            } for m in mods if m.get("module") in {"geral", "facial", "corporal", "capilar"}}
+
+        # signed_docs vinculados ao appointment
+        signed_docs = []
+        if sess.get("appointment_id"):
+            signed_docs = await db.documents.find(
+                {"clinic_id": user["clinic_id"], "appointment_id": sess["appointment_id"]},
+                {"_id": 0, "document_id": 1, "template_name": 1, "status": 1, "pdf_url": 1, "created_at": 1},
+            ).to_list(20)
+
+        timeline.append({
+            "session_id": sid,
+            "session_number": sess.get("session_number") or rec and rec.get("session_number"),
+            "status": sess.get("status"),
+            "started_at": sess.get("started_at"),
+            "finalized_at": sess.get("finalized_at"),
+            "duration_seconds": sess.get("duration_seconds") or 0,
+            "procedure": sess.get("procedure"),
+            "procedure_id": sess.get("procedure_id"),
+            "professional_id": sess.get("professional_id"),
+            "professional_name": sess.get("professional_name"),
+            "appointment": appt,
+            "medical_record": rec,
+            "ficha_snapshot": ficha,
+            "budget": budget,
+            "financial_entries": entries,
+            "receipts": receipts,
+            "signed_documents": signed_docs,
+            "signatures": {
+                "consent": bool(sess.get("consent_signature")),
+                "evolution": bool(sess.get("evolution_signature")),
+                "consent_meta": sess.get("consent_signature_meta"),
+                "evolution_meta": sess.get("evolution_signature_meta"),
+            },
+        })
+
+    # Legado: medical_records ORFÃOS (sem session_id) — criados manualmente antes do finalize automático
+    legacy_records = await db.medical_records.find(
+        {"clinic_id": user["clinic_id"], "patient_id": patient_id,
+         "$or": [{"session_id": None}, {"session_id": {"$exists": False}}]},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(200)
+
+    return {
+        "patient": {"patient_id": p["patient_id"], "name": p.get("name"), "cpf": p.get("cpf")},
+        "sessions": timeline,
+        "legacy_records": legacy_records,
+        "counts": {
+            "sessions": len(timeline),
+            "concluidas": sum(1 for s in timeline if s["status"] == "concluido"),
+            "em_andamento": sum(1 for s in timeline if s["status"] != "concluido"),
+            "legacy": len(legacy_records),
+        },
+    }
 
 
 # ============================================================
