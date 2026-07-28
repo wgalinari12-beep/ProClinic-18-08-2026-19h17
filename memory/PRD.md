@@ -105,14 +105,21 @@ Correções 4-7 do plano de hardening (correções 1-3 já validadas na 2.5D). T
 - ✅ **Frontend `AttendanceDialog`** — `captureSignature(type, base64)` usa o novo endpoint `/sign` para persistir com metadata; fallback para autosave em caso de falha.
 - ✅ **Backend tests**: 32/32 novos (test_phase2_5e_sign.py) + 21/21 regressão 2.5D. Total: 53/53 verdes.
 
-## P0 backlog — Fase 2.5F+ (próxima)
-- **Modularizar `server.py`** (~4607 linhas) — split em routers (auth, attendance, finance, medical_records, budgets, super_admin).
-- **Pydantic model `SignPayload`** dedicado para `/attendance/{sid}/sign` (hoje usa `Dict[str, Any]`).
+### Fase 2 — Integridade Clínica e Prontuário (Fev/2026)
+- ✅ **`ficha_snapshot` no `medical_records`** — no `finalize_attendance`, snapshot dos `anamnesis_modules` (geral/facial/corporal/capilar) do paciente é copiado para o prontuário com `answers`, `photos`, `captured_at`. Filtro `created_by=user_id` para `role=profissional` (isolamento entre profissionais); admin/financeiro captam todos. Snapshot vazio = `{}`.
+- ✅ **Novo endpoint** `GET /api/patients/{patient_id}/timeline` — timeline clínica consolidada retornando: `{patient, sessions[], legacy_records[], counts}`. Cada sessão traz: `session_id`, `session_number ATT-YYYY-######`, `appointment`, `medical_record`, `ficha_snapshot`, `budget`, `financial_entries[]`, `receipts[]`, `signed_documents[]`, `signatures{consent, evolution, consent_meta, evolution_meta}`. RBAC: profissional só vê sessões próprias (`started_by=user_id`); admin vê todas; recepção 403 (dados clínicos).
+- ✅ **Sessões em vôo** (`status=rascunho`) aparecem na timeline com `medical_record=null` e `ficha_snapshot` puxado dos `anamnesis_modules` atuais (não do record).
+- ✅ **Legacy records** (medical_records sem session_id, criados manualmente ou antes da Fase 2.5D) agrupados em `legacy_records[]` separado.
+- ✅ **Frontend `PatientClinicalTimeline.jsx`** — nova aba "Clínica" em `PatientDetail.jsx`. UI premium com 4 KPIs (sessões/concluídas/em andamento/legado), timeline vertical com dot indicators, sessões expansíveis mostrando: evolução clínica, snapshot da ficha por módulo, fotos antes/depois em grid, assinaturas com metadata forense completa (SHA256, IP, timezone), tabela de parcelas com badges de status, documentos assinados linkados.
+- ✅ **Backend tests**: 18/18 novos (test_phase2_integridade_clinica.py) + 53/53 regressão (2.5D + 2.5E) = **71/71 pass**.
+
+## P0 backlog — Próxima fase
+- **Modularizar `server.py`** (~4748 linhas) — split em routers por domínio (auth, attendance, finance, records, timeline, budgets, super_admin).
+- **Paginação no `/timeline`** — hoje hardcoded `to_list(200)`, adicionar `?limit=` e `?offset=` ou lazy-load de artefatos secundários.
 - **Dashboard Financeiro Avançado** — projeção fluxo de caixa 30/60/90/180 dias + DRE simplificado.
 - **Exports** — CSV/Excel/PDF com filtros aplicados.
-- **Copiar FichaForm respostas para medical_record** no finalize.
 - **Módulo de comissões** por profissional.
-- **Sprint quick-wins UX**: preview do recibo, barra de progresso das abas, alergias no header do dialog.
+- **Dossiê PDF único** por sessão (TCLE + evolução + recibo + orçamento consolidados).
 
 ## P0 backlog — Fase 2.3B / paralelo
 - Import DOCX + PDF como modelos.

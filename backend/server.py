@@ -2586,8 +2586,9 @@ async def patient_completeness(patient_id: str, user: dict = Depends(get_current
 async def patient_timeline(patient_id: str, user: dict = Depends(get_current_user)):
     """Timeline clínica consolidada por sessão (Fase 2 - Integridade Clínica).
     Retorna cada sessão de atendimento do paciente com todos os artefatos relacionados
-    (medical_record, ficha_snapshot, budget, financial_entries, receipts) agrupados
-    e ordenados cronologicamente (mais recentes primeiro)."""
+    (dados clínicos, ficha, evolução, assinaturas) — agrupados e ordenados
+    cronologicamente (mais recentes primeiro)."""
+    forbid_recepcao_clinical(user)
     # Verificar acesso ao paciente
     p = await db.patients.find_one(
         {"patient_id": patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
