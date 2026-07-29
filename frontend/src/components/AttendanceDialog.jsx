@@ -65,6 +65,9 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   const [linkedBudget, setLinkedBudget] = useState(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [docGenOpen, setDocGenOpen] = useState(false);
+  // ⭐ Fase 3: dados enriquecidos para header inteligente
+  const [financeSummary, setFinanceSummary] = useState(null);
+  const [lastAttendance, setLastAttendance] = useState(null);
 
   // Load on open
   useEffect(() => {
@@ -95,6 +98,18 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
           if (linked) setLinkedBudget(linked);
           else setLinkedBudget(null);
         } catch { /* ignore */ }
+        // ⭐ Fase 3: dados extras para o header inteligente
+        try {
+          const { data: fin } = await api.get(`/finance/patient/${appointment.patient_id}/summary`);
+          setFinanceSummary(fin);
+        } catch { setFinanceSummary(null); }
+        try {
+          const { data: tl } = await api.get(`/patients/${appointment.patient_id}/timeline`);
+          const previous = (tl.sessions || []).find(
+            (s) => s.finalized_at && s.session_id !== sess.session_id
+          );
+          setLastAttendance(previous?.finalized_at || null);
+        } catch { setLastAttendance(null); }
         setStage("inProgress");
       } catch (e) {
         toast.error("Erro ao iniciar atendimento");
@@ -266,8 +281,30 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
     if (busy) return; // ⭐ Problema 1: trava contra reentrada
     setBusy(true);
     try {
-      await api.post(`/attendance/${session.session_id}/finalize`, paymentPayload);
-      toast.success("Atendimento concluído e financeiro lançado");
+      const { data } = await api.post(`/attendance/${session.session_id}/finalize`, paymentPayload);
+      // ⭐ Fase 3: mostra link do primeiro recibo gerado no toast
+      const firstEntry = (data?.financial_entries || [])[0];
+      if (firstEntry) {
+        try {
+          const { data: rec } = await api.get(`/finance/entries/${firstEntry}/receipt`);
+          if (rec?.receipt_url) {
+            toast.success(`Recibo ${rec.receipt_number} gerado`, {
+              description: "Clique para visualizar o PDF",
+              action: {
+                label: "Abrir",
+                onClick: () => window.open(`${process.env.REACT_APP_BACKEND_URL}${rec.receipt_url}`, "_blank", "noopener"),
+              },
+              duration: 8000,
+            });
+          } else {
+            toast.success("Atendimento concluído e financeiro lançado");
+          }
+        } catch {
+          toast.success("Atendimento concluído e financeiro lançado");
+        }
+      } else {
+        toast.success("Atendimento concluído");
+      }
       setPaymentOpen(false);
       onCompleted?.();
       onOpenChange(false);
@@ -278,11 +315,52 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
     }
   };
 
+  // ⭐ Fase 3: helpers para UX premium
+  const patientAge = (() => {
+    const bd = patient?.birth_date;
+    if (!bd) return null;
+    try {
+      const d = new Date(bd);
+      const now = new Date();
+      let a = now.getFullYear() - d.getFullYear();
+      const m = now.getMonth() - d.getMonth();
+      if (m < 0 || (m === 0 && now.getDate() < d.getDate())) a--;
+      return a > 0 && a < 130 ? a : null;
+    } catch { return null; }
+  })();
+
+  const progressSteps = (() => {
+    if (!session) return [];
+    const budgetOk = !!linkedBudget && (linkedBudget.total || 0) > 0;
+    return [
+      { key: "ficha", label: "Ficha", done: !!(session.observations || session.evolution) },
+      { key: "fotos", label: "Fotos", done: (session.photos_before?.length || 0) + (session.photos_after?.length || 0) > 0 },
+      { key: "evolucao", label: "Evolução", done: !!(session.evolution && session.evolution.length > 20) },
+      { key: "assinatura", label: "Assinatura", done: !!session.evolution_signature },
+      { key: "orcamento", label: "Orçamento", done: budgetOk },
+      { key: "finalizacao", label: "Finalização", done: session.status === "concluido" },
+    ];
+  })();
+  const progressPct = progressSteps.length > 0 ? Math.round((progressSteps.filter((s) => s.done).length / progressSteps.length) * 100) : 0;
+
+  const alerts = (() => {
+    const arr = [];
+    if (patient?.allergies) arr.push({ level: "danger", label: "Alergia registrada", detail: patient.allergies });
+    if (patient?.medications) arr.push({ level: "info", label: "Medicações em uso", detail: patient.medications });
+    if (session && !session.evolution_signature) arr.push({ level: "warn", label: "Assinatura de evolução pendente" });
+    if (session && (session.photos_before?.length || 0) + (session.photos_after?.length || 0) === 0)
+      arr.push({ level: "info", label: "Nenhuma foto capturada" });
+    if (financeSummary?.total_vencido > 0) arr.push({ level: "warn", label: `Paciente com R$ ${(financeSummary.total_vencido).toLocaleString("pt-BR", {minimumFractionDigits:2})} em atraso` });
+    return arr;
+  })();
+
+  const financialPreviewTotal = linkedBudget?.total || appointment?.price || 0;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         data-testid="attendance-dialog"
-        className="max-w-4xl rounded-2xl p-0 max-h-[92vh] overflow-hidden flex flex-col"
+        className="max-w-5xl w-[95vw] rounded-2xl p-0 max-h-[92vh] overflow-hidden flex flex-col"
         onPointerDownOutside={(e) => e.preventDefault()}
         onInteractOutside={(e) => e.preventDefault()}
       >
@@ -318,6 +396,95 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
             </div>
           </div>
         </DialogHeader>
+
+        {/* ⭐ Fase 3: Smart Header + Progress Bar + Alerts (só em inProgress) */}
+        {stage === "inProgress" && patient && (
+          <div className="border-b border-border px-6 py-3 bg-muted/30 shrink-0" data-testid="attendance-smart-header">
+            <div className="flex items-center gap-4 flex-wrap">
+              {/* Avatar */}
+              <div className="h-12 w-12 rounded-full ring-2 ring-primary/30 overflow-hidden bg-primary/10 flex items-center justify-center shrink-0">
+                {patient.photo_url ? (
+                  <img src={`${process.env.REACT_APP_BACKEND_URL}${patient.photo_url}`} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <span className="font-display text-lg text-primary font-semibold">{(patient.name || "?").slice(0, 1).toUpperCase()}</span>
+                )}
+              </div>
+              {/* Info */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium text-sm truncate">{patient.name}</span>
+                  {patientAge != null && (
+                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{patientAge} anos</span>
+                  )}
+                  {patient.gender && <span className="text-[10px] uppercase tracking-wider text-muted-foreground">· {patient.gender}</span>}
+                </div>
+                <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-3 flex-wrap" data-testid="smart-header-meta">
+                  {lastAttendance && <span>Último: {new Date(lastAttendance).toLocaleDateString("pt-BR")}</span>}
+                  {financeSummary && (
+                    <>
+                      {financeSummary.total_pendente > 0 && (
+                        <span className="text-yellow-600">Pendente: R$ {financeSummary.total_pendente.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
+                      )}
+                      {financeSummary.total_vencido > 0 && (
+                        <span className="text-destructive font-semibold">⚠ R$ {financeSummary.total_vencido.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} vencido</span>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+              {/* Health chips (allergies / medications) */}
+              <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                {patient.allergies && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 text-destructive px-2 py-0.5 text-[10px] ring-1 ring-destructive/30" data-testid="chip-allergies" title={patient.allergies}>
+                    <AlertCircle className="h-3 w-3" strokeWidth={1.5} /> Alergia
+                  </span>
+                )}
+                {patient.medications && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 text-primary px-2 py-0.5 text-[10px] ring-1 ring-primary/30" title={patient.medications} data-testid="chip-medications">
+                    <Pill className="h-3 w-3" strokeWidth={1.5} /> Medicações
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Progress bar */}
+            <div className="mt-3" data-testid="attendance-progress">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {progressSteps.map((s) => (
+                    <span key={s.key} className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full ${s.done ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"}`}
+                      data-testid={`progress-step-${s.key}-${s.done ? "done" : "pending"}`}>
+                      {s.done && <CheckCircle2 className="h-2.5 w-2.5" />}
+                      {s.label}
+                    </span>
+                  ))}
+                </div>
+                <span className="text-[10px] font-mono text-muted-foreground">{progressPct}%</span>
+              </div>
+              <div className="h-1 rounded-full bg-muted overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-primary to-success transition-all" style={{ width: `${progressPct}%` }} />
+              </div>
+            </div>
+
+            {/* Alerts row */}
+            {alerts.length > 0 && (
+              <div className="mt-3 flex items-start gap-1.5 flex-wrap" data-testid="attendance-alerts">
+                {alerts.map((a, i) => (
+                  <span key={i}
+                    title={a.detail}
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] ${
+                      a.level === "danger" ? "bg-destructive/10 text-destructive ring-1 ring-destructive/30" :
+                      a.level === "warn" ? "bg-yellow-500/10 text-yellow-700 ring-1 ring-yellow-500/30" :
+                      "bg-primary/10 text-primary ring-1 ring-primary/30"
+                    }`}>
+                    <AlertCircle className="h-3 w-3" />
+                    {a.label}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto">
@@ -507,13 +674,32 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
 
         {/* Footer actions */}
         {stage === "inProgress" && (
-          <div className="border-t border-border px-6 py-3 flex items-center justify-between shrink-0 bg-card">
+          <div className="border-t border-border px-6 py-3 flex items-center justify-between shrink-0 bg-card gap-3 flex-wrap" data-testid="attendance-footer">
             <Button variant="ghost" onClick={() => onOpenChange(false)} data-testid="attendance-close-draft-btn">
               Salvar rascunho e sair
             </Button>
-            <Button onClick={finalize} disabled={busy} className="rounded-xl bg-primary text-primary-foreground hover:bg-primary/90" data-testid="finalize-attendance-btn">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><CheckCircle2 className="h-4 w-4 mr-1" /> Concluir atendimento</>}
-            </Button>
+            {/* ⭐ Fase 3: Financial preview inline */}
+            <div className="flex items-center gap-3 flex-wrap ml-auto">
+              {financialPreviewTotal > 0 && (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 text-[11px]" data-testid="financial-preview">
+                  <Wallet className="h-3.5 w-3.5 text-primary" strokeWidth={1.5} />
+                  <div className="flex flex-col leading-tight">
+                    <span className="text-muted-foreground text-[9px] uppercase tracking-wider">Total a lançar</span>
+                    <span className="font-mono font-semibold text-sm">
+                      R$ {financialPreviewTotal.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  {linkedBudget?.installments > 1 && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                      {linkedBudget.installments}x
+                    </span>
+                  )}
+                </div>
+              )}
+              <Button onClick={finalize} disabled={busy} className="rounded-xl bg-primary text-primary-foreground hover:bg-primary/90" data-testid="finalize-attendance-btn">
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><CheckCircle2 className="h-4 w-4 mr-1" /> Concluir atendimento</>}
+              </Button>
+            </div>
           </div>
         )}
 

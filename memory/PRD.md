@@ -113,13 +113,25 @@ Correções 4-7 do plano de hardening (correções 1-3 já validadas na 2.5D). T
 - ✅ **Frontend `PatientClinicalTimeline.jsx`** — nova aba "Clínica" em `PatientDetail.jsx`. UI premium com 4 KPIs (sessões/concluídas/em andamento/legado), timeline vertical com dot indicators, sessões expansíveis mostrando: evolução clínica, snapshot da ficha por módulo, fotos antes/depois em grid, assinaturas com metadata forense completa (SHA256, IP, timezone), tabela de parcelas com badges de status, documentos assinados linkados.
 - ✅ **Backend tests**: 18/18 novos (test_phase2_integridade_clinica.py) + 53/53 regressão (2.5D + 2.5E) = **71/71 pass**.
 
-## P0 backlog — Próxima fase
-- **Modularizar `server.py`** (~4748 linhas) — split em routers por domínio (auth, attendance, finance, records, timeline, budgets, super_admin).
-- **Paginação no `/timeline`** — hoje hardcoded `to_list(200)`, adicionar `?limit=` e `?offset=` ou lazy-load de artefatos secundários.
-- **Dashboard Financeiro Avançado** — projeção fluxo de caixa 30/60/90/180 dias + DRE simplificado.
-- **Exports** — CSV/Excel/PDF com filtros aplicados.
-- **Módulo de comissões** por profissional.
-- **Dossiê PDF único** por sessão (TCLE + evolução + recibo + orçamento consolidados).
+### Fase 3 — Experiência Premium de Atendimento (Fev/2026)
+UX/UI puro no `AttendanceDialog` — zero mudança em backend/APIs/regras clínicas/persistência.
+
+- ✅ **Smart Header** — banner abaixo do title com avatar do paciente (ou inicial), nome + idade calculada + gender, último atendimento (via `/timeline`), status financeiro (pendente + vencido em atraso destacado), chips vermelhos de "Alergia" (com tooltip do texto) e chips azuis de "Medicações" (com tooltip).
+- ✅ **Barra de progresso 6 etapas** — Ficha / Fotos / Evolução / Assinatura / Orçamento / Finalização — pills com checkmarks quando concluídos + barra de gradient primary→success mostrando % de conclusão.
+- ✅ **Alertas contextuais** — banner de chips destacando o que precisa atenção: alergia, medicações, assinatura ausente, foto ausente, cobranças vencidas do paciente (níveis danger/warn/info com cores distintas).
+- ✅ **Financial Preview inline** — mini-card no footer ao lado do botão Concluir mostrando **Total a lançar R$ X.XXX** + chip com nº de parcelas se aplicável — visível antes de abrir o CompletePaymentDialog.
+- ✅ **Preview de Recibo pós-finalize** — toast com action button "Abrir" que abre o PDF do primeiro recibo gerado em nova aba.
+- ✅ **Responsividade** — dialog agora `max-w-5xl w-[95vw]` (antes max-w-4xl), aproveitando melhor telas desktop/ultrawide sem quebrar em mobile.
+- ✅ **Fetches novos aditivos** — `GET /finance/patient/{id}/summary` e `GET /patients/{id}/timeline` chamados no load do dialog (já existiam desde 2.5C e Fase 2).
+
+**Testado visualmente** com screenshot: header renderiza "Wellynghton · 37 anos · ⚠ Alergia" + progresso 0% + 3 alertas contextuais + footer com "TOTAL A LANÇAR R$ 800,00". Nenhum lint error.
+
+## P0 backlog — Próximas fases
+- **Modularizar `server.py`** (~4748 linhas) em routers por domínio.
+- **Cash flow 30/60/90/180 dias** + DRE simplificado.
+- **Módulo de comissões** por profissional (dados já persistidos em financial_entries).
+- **Dossiê PDF único** por sessão consolidando TCLE + evolução + recibo + orçamento.
+- **Paginação** no endpoint `/timeline`.
 
 ## P0 backlog — Fase 2.3B / paralelo
 - Import DOCX + PDF como modelos.
