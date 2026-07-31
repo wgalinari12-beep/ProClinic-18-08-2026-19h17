@@ -126,12 +126,24 @@ UX/UI puro no `AttendanceDialog` — zero mudança em backend/APIs/regras clíni
 
 **Testado visualmente** com screenshot: header renderiza "Wellynghton · 37 anos · ⚠ Alergia" + progresso 0% + 3 alertas contextuais + footer com "TOTAL A LANÇAR R$ 800,00". Nenhum lint error.
 
+### Fase 4 — IA Clínica Avançada (Fev/2026)
+IA contextual + logs auditáveis. Backward compatível: types antigos continuam idênticos.
+
+- ✅ **Contexto rico** — helper `_build_patient_ai_context()` injeta no prompt: nome, idade calculada, gênero, ALERGIAS (destacadas), medicações em uso, notas do cadastro, últimos 3 `medical_records` (excluindo sessão atual), ficha atual (`anamnesis_modules` com respostas top-6).
+- ✅ **Novos types**: `contraindications` (análise de red flags entre allergies × procedimento planejado), `improve` (melhoria de texto mantendo significado clínico), `rewrite` (linguagem clínica formal).
+- ✅ **Parâmetros novos**: `session_id` (rastreabilidade), `mode` (append/replace/improve/rewrite — hint frontend), `current_text` (para improve/rewrite).
+- ✅ **Coleção `ai_generations`** — log de auditoria com `generation_id`, `clinic_id`, `user_id`, `user_name`, `type`, `mode`, `patient_id`, `session_id`, `prompt` (8000 chars), `response` (8000 chars), `model`, `created_at`. Índices em `(clinic_id, patient_id, created_at desc)` e `(clinic_id, session_id)`.
+- ✅ **Novo endpoint** `GET /api/ai/generations?patient_id=&session_id=&limit=` — histórico de gerações. RBAC: profissional só vê próprias, admin vê todas.
+- ✅ **Frontend `AttendanceDialog`** — toolbar IA contextual na aba Evolução: banner destaca "IA Clínica contextual considera paciente + histórico + ficha", **mode selector** (Anexar/Substituir/Melhorar/Reescrever), botões Evolução IA · Protocolo · Contraindicações · Resumo da sessão, banner de alerta amarelo quando IA retorna contraindicações.
+- ✅ **Backend tests**: 26/26 novos (`test_phase4_ai.py`, 117s total) — cobrindo backward compat, novos types, contexto enriquecido inspecionado via /ai/generations, RBAC, robustez, concorrência (3 chamadas paralelas → 3 generation_ids distintos).
+
 ## P0 backlog — Próximas fases
-- **Modularizar `server.py`** (~4748 linhas) em routers por domínio.
-- **Cash flow 30/60/90/180 dias** + DRE simplificado.
-- **Módulo de comissões** por profissional (dados já persistidos em financial_entries).
+- **Modularizar `server.py`** (~4860 linhas) — split em routers.
+- **Rate-limiting** em `/ai/generate` por user_id (30 req/min) para proteger custos da EMERGENT_LLM_KEY.
+- **Env var `LLM_MODEL`** — hoje modelo hardcoded no código.
+- **Cash flow 30/60/90/180** + DRE simplificado.
+- **Módulo de comissões** por profissional.
 - **Dossiê PDF único** por sessão consolidando TCLE + evolução + recibo + orçamento.
-- **Paginação** no endpoint `/timeline`.
 
 ## P0 backlog — Fase 2.3B / paralelo
 - Import DOCX + PDF como modelos.

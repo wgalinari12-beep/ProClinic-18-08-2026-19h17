@@ -2578,8 +2578,8 @@ async def _log_ai_generation(user: dict, data: "AISummaryIn", prompt: str, respo
             "mode": data.mode,
             "patient_id": data.patient_id,
             "session_id": data.session_id,
-            "prompt": prompt[:4000],  # trunca defensivamente
-            "response": (response or "")[:4000],
+            "prompt": prompt[:8000],  # trunca defensivamente (aumentado p/ preservar histórico rico)
+            "response": (response or "")[:8000],
             "model": model,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
