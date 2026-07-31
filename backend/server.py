@@ -2510,23 +2510,93 @@ async def sign_public_budget(token: str, payload: Dict[str, Any]):
 # AI Clinical Helpers
 # ============================================================
 class AISummaryIn(BaseModel):
-    type: Literal["evolution", "protocol", "session_summary", "anamnesis_summary"]
+    type: Literal["evolution", "protocol", "session_summary", "anamnesis_summary", "contraindications", "improve", "rewrite"]
     patient_id: Optional[str] = None
     context: Optional[str] = None
     notes: Optional[str] = None
+    session_id: Optional[str] = None    # ⭐ Fase 4: enriquecer com histórico
+    mode: Optional[Literal["append", "replace", "improve", "rewrite"]] = None  # frontend hint (só usado no log)
+    current_text: Optional[str] = None  # texto atual para improve/rewrite
+
+
+async def _build_patient_ai_context(patient_id: str, clinic_id: str, session_id: Optional[str] = None) -> str:
+    """Fase 4: monta contexto rico com histórico clínico do paciente para a IA."""
+    ctx_lines: List[str] = []
+    p = await db.patients.find_one({"patient_id": patient_id, "clinic_id": clinic_id}, {"_id": 0})
+    if not p:
+        return ""
+    age = None
+    if p.get("birth_date"):
+        try:
+            bd = datetime.strptime(p["birth_date"], "%Y-%m-%d")
+            age = (datetime.now(timezone.utc).date() - bd.date()).days // 365
+        except Exception:
+            age = None
+    ctx_lines.append(f"Paciente: {p.get('name')}{' | ' + str(age) + ' anos' if age else ''}")
+    if p.get("gender"): ctx_lines.append(f"Gênero: {p['gender']}")
+    if p.get("allergies"): ctx_lines.append(f"ALERGIAS: {p['allergies']}")
+    if p.get("medications"): ctx_lines.append(f"Medicações em uso: {p['medications']}")
+    if p.get("notes"): ctx_lines.append(f"Observações do cadastro: {p['notes']}")
+
+    # Últimos 3 medical_records (não incluindo a sessão atual)
+    q = {"clinic_id": clinic_id, "patient_id": patient_id}
+    if session_id:
+        q["session_id"] = {"$ne": session_id}
+    recent = await db.medical_records.find(q, {"_id": 0}).sort("created_at", -1).to_list(3)
+    if recent:
+        ctx_lines.append("\nHISTÓRICO CLÍNICO recente (últimas sessões):")
+        for r in recent:
+            when = (r.get("created_at") or "")[:10]
+            proc = r.get("procedure") or "—"
+            evo = (r.get("evolution") or r.get("observations") or "").strip()[:200]
+            ctx_lines.append(f"- {when} | {proc}: {evo}")
+
+    # Ficha atual (anamnesis_modules do paciente)
+    modules = await db.anamnesis_modules.find(
+        {"clinic_id": clinic_id, "patient_id": patient_id}, {"_id": 0}
+    ).to_list(10)
+    if modules:
+        ctx_lines.append("\nFICHA ATUAL (respostas relevantes):")
+        for m in modules[:4]:
+            answers = m.get("answers") or {}
+            top = [f"{k}={v}" for k, v in list(answers.items())[:6] if v]
+            if top:
+                ctx_lines.append(f"- {m.get('module', 'geral')}: {'; '.join(top)}")
+
+    return "\n".join(ctx_lines)
+
+
+async def _log_ai_generation(user: dict, data: "AISummaryIn", prompt: str, response: str, model: str) -> None:
+    """Fase 4: log estruturado de toda geração de IA para auditoria."""
+    try:
+        await db.ai_generations.insert_one({
+            "generation_id": f"aig_{uuid.uuid4().hex[:12]}",
+            "clinic_id": user["clinic_id"],
+            "user_id": user["user_id"],
+            "user_name": user.get("name"),
+            "type": data.type,
+            "mode": data.mode,
+            "patient_id": data.patient_id,
+            "session_id": data.session_id,
+            "prompt": prompt[:4000],  # trunca defensivamente
+            "response": (response or "")[:4000],
+            "model": model,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.warning("ai_generation log failed: %s", e)
 
 
 @api_router.post("/ai/generate")
 async def ai_generate(data: AISummaryIn, user: dict = Depends(get_current_user)):
     if not EMERGENT_LLM_KEY:
         raise HTTPException(status_code=500, detail="Chave LLM não configurada")
+    # ⭐ Fase 4: contexto enriquecido (paciente + histórico + ficha)
     patient_ctx = ""
     if data.patient_id:
-        p = await db.patients.find_one(
-            {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
-        )
-        if p:
-            patient_ctx = f"Paciente: {p.get('name')} | Alergias: {p.get('allergies') or '—'} | Medicamentos: {p.get('medications') or '—'}"
+        patient_ctx = await _build_patient_ai_context(data.patient_id, user["clinic_id"], data.session_id)
+
+    current = (data.current_text or "").strip()
     PROMPTS = {
         "evolution": (
             "Você é uma assistente clínica. Com base nos dados abaixo, escreva uma EVOLUÇÃO CLÍNICA "
@@ -2540,17 +2610,37 @@ async def ai_generate(data: AISummaryIn, user: dict = Depends(get_current_user))
             f"{patient_ctx}\nDemanda: {data.context or '—'}\nNotas: {data.notes or '—'}"
         ),
         "session_summary": (
-            "Faça um RESUMO da sessão clínica abaixo, em até 4 linhas, em português do Brasil. "
-            "Use linguagem técnica e objetiva.\n"
-            f"{patient_ctx}\nDados da sessão: {data.notes or '—'}"
+            "Faça um RESUMO CLÍNICO consolidado da sessão de atendimento abaixo, em até 8 linhas, "
+            "em português do Brasil. Estruture: (1) contexto do paciente, (2) o que foi realizado, "
+            "(3) resposta observada, (4) próximos passos sugeridos. Linguagem técnica e objetiva.\n"
+            f"{patient_ctx}\nDados da sessão: {data.notes or '—'}\nProcedimento: {data.context or '—'}"
         ),
         "anamnesis_summary": (
             "Resuma a anamnese abaixo em até 5 linhas destacando pontos clinicamente relevantes "
             "(alergias, medicações, contraindicações, queixas principais). Português do Brasil.\n"
             f"{patient_ctx}\nAnamnese: {data.notes or '—'}"
         ),
+        "contraindications": (
+            "Analise o cenário clínico abaixo e liste POSSÍVEIS CONTRAINDICAÇÕES, INTERAÇÕES ou "
+            "PONTOS DE ATENÇÃO relevantes ao procedimento planejado. Seja objetivo, use bullets curtos "
+            "em português do Brasil. Se não houver contraindicações evidentes, responda: "
+            "'Nenhuma contraindicação evidente identificada com base nos dados fornecidos.'\n"
+            f"{patient_ctx}\nProcedimento planejado: {data.context or '—'}\nNotas adicionais: {data.notes or '—'}"
+        ),
+        "improve": (
+            "Melhore o texto abaixo mantendo o significado clínico original. Corrija gramática, "
+            "termos técnicos e clareza. Português do Brasil. Retorne APENAS o texto melhorado, "
+            "sem comentários.\n"
+            f"{patient_ctx}\nTEXTO ATUAL:\n{current or '—'}"
+        ),
+        "rewrite": (
+            "Reescreva o texto abaixo em linguagem clínica formal, mantendo os fatos. "
+            "Português do Brasil. Retorne APENAS o texto reescrito.\n"
+            f"{patient_ctx}\nTEXTO ATUAL:\n{current or '—'}"
+        ),
     }
     prompt = PROMPTS[data.type]
+    model = "claude-sonnet-4-5-20250929"
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"gen_{user['user_id']}_{uuid.uuid4().hex[:8]}",
@@ -2559,12 +2649,31 @@ async def ai_generate(data: AISummaryIn, user: dict = Depends(get_current_user))
             "NÃO diagnostique. NÃO prescreva medicamentos. Sempre lembre que a avaliação "
             "final é do profissional. Responda em português do Brasil de forma técnica e objetiva."
         ),
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+    ).with_model("anthropic", model)
     try:
         reply = await chat.send_message(UserMessage(text=prompt))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro IA: {e}")
-    return {"text": reply}
+    # ⭐ Fase 4: log de auditoria
+    await _log_ai_generation(user, data, prompt, reply, model)
+    return {"text": reply, "model": model, "type": data.type}
+
+
+@api_router.get("/ai/generations")
+async def list_ai_generations(
+    patient_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    """Fase 4: histórico de gerações IA para auditoria e transparência."""
+    q: Dict[str, Any] = {"clinic_id": user["clinic_id"]}
+    if patient_id: q["patient_id"] = patient_id
+    if session_id: q["session_id"] = session_id
+    if user.get("role") == "profissional":
+        q["user_id"] = user["user_id"]
+    docs = await db.ai_generations.find(q, {"_id": 0}).sort("created_at", -1).limit(min(max(1, limit), 200)).to_list(limit)
+    return docs
 
 
 # ============================================================
@@ -4720,6 +4829,8 @@ async def on_startup():
         await db.medical_records.create_index([("clinic_id", 1), ("session_id", 1)], sparse=True)
         await db.medical_records.create_index([("clinic_id", 1), ("patient_id", 1)])
         await db.financial_entries.create_index([("clinic_id", 1), ("session_id", 1)], sparse=True)
+        await db.ai_generations.create_index([("clinic_id", 1), ("patient_id", 1), ("created_at", -1)], sparse=True)
+        await db.ai_generations.create_index([("clinic_id", 1), ("session_id", 1)], sparse=True)
     except Exception:
         pass
     # ensure trial for the demo clinic (idempotent)

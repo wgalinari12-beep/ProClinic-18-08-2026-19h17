@@ -212,35 +212,70 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   };
 
   // === AI helpers ===
-  const callAi = async (type, notes) => {
+  // ⭐ Fase 4: IA contextual com mode (append/replace/improve/rewrite) + session_id
+  const [aiMode, setAiMode] = useState("append"); // append | replace | improve | rewrite
+  const [contraAlert, setContraAlert] = useState(null);
+
+  const callAi = async (type, notes, opts = {}) => {
     setAiBusy(true);
     try {
       const { data } = await api.post("/ai/generate", {
-        type, patient_id: patient.patient_id, notes, context: appointment?.procedure,
+        type,
+        patient_id: patient.patient_id,
+        session_id: session?.session_id,
+        notes,
+        context: appointment?.procedure,
+        mode: opts.mode || aiMode,
+        current_text: opts.current_text,
       });
       return data.text;
     } catch (e) {
-      toast.error("Falha IA");
+      toast.error(e.response?.data?.detail || "Falha IA");
       return null;
     } finally { setAiBusy(false); }
   };
 
+  const applyAiResult = (field, current, generated, mode) => {
+    if (mode === "replace" || mode === "rewrite" || mode === "improve") {
+      return generated;
+    }
+    return `${current || ""}\n\n${generated}`.trim();
+  };
+
   const generateEvolution = async () => {
     const notes = session.observations || session.evolution || "Atendimento padrão";
-    const text = await callAi("evolution", notes);
+    const type = (aiMode === "improve" || aiMode === "rewrite") ? aiMode : "evolution";
+    const text = await callAi(type, notes, { current_text: session.evolution });
     if (text) {
-      const merged = `${session.evolution || ""}\n\n${text}`.trim();
-      autosave({ evolution: merged });
-      toast.success("Evolução IA gerada");
+      autosave({ evolution: applyAiResult("evolution", session.evolution, text, aiMode) });
+      toast.success(aiMode === "replace" || aiMode === "rewrite" || aiMode === "improve" ? "Evolução IA substituída" : "Evolução IA anexada");
     }
   };
 
   const suggestProtocol = async () => {
     const text = await callAi("protocol", session.observations || appointment?.procedure);
     if (text) {
-      const merged = `${session.protocols || ""}\n\n${text}`.trim();
-      autosave({ protocols: merged });
+      autosave({ protocols: applyAiResult("protocols", session.protocols, text, aiMode) });
       toast.success("Protocolo IA sugerido");
+    }
+  };
+
+  const checkContraindications = async () => {
+    const text = await callAi("contraindications", session?.observations || "");
+    if (text) {
+      setContraAlert(text);
+      toast.success("Análise de contraindicações gerada");
+    }
+  };
+
+  const generateSessionSummary = async () => {
+    const notes = [
+      session?.observations, session?.evolution, session?.protocols, session?.prescriptions,
+    ].filter(Boolean).join("\n\n");
+    const text = await callAi("session_summary", notes || "Sessão em andamento");
+    if (text) {
+      autosave({ observations: applyAiResult("observations", session.observations, `[Resumo IA da sessão]\n${text}`, aiMode) });
+      toast.success("Resumo IA da sessão adicionado");
     }
   };
 
@@ -587,17 +622,56 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
 
                 {/* Evolução */}
                 <TabsContent value="evolucao" className="mt-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs uppercase tracking-wider text-muted-foreground">Observações da sessão</Label>
-                    <div className="flex items-center gap-2">
+                  {/* ⭐ Fase 4: Toolbar IA contextual */}
+                  <div className="rounded-xl border border-primary/20 bg-primary/5 p-3" data-testid="ai-toolbar">
+                    <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                      <div className="flex items-center gap-1.5 text-xs text-primary">
+                        <Sparkles className="h-3.5 w-3.5" />
+                        <span className="font-semibold">IA Clínica contextual</span>
+                        <span className="text-[10px] text-muted-foreground ml-2">considera paciente + histórico + ficha</span>
+                      </div>
+                      <div className="flex items-center gap-1 text-[10px]" data-testid="ai-mode-selector">
+                        <span className="text-muted-foreground uppercase tracking-wider mr-1">Modo:</span>
+                        {[
+                          { k: "append", label: "Anexar" },
+                          { k: "replace", label: "Substituir" },
+                          { k: "improve", label: "Melhorar" },
+                          { k: "rewrite", label: "Reescrever" },
+                        ].map((m) => (
+                          <button key={m.k} type="button" onClick={() => setAiMode(m.k)}
+                            data-testid={`ai-mode-${m.k}`}
+                            className={`px-2 py-0.5 rounded-full transition ${aiMode === m.k ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}>
+                            {m.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
                       <Button type="button" size="sm" variant="outline" onClick={generateEvolution} disabled={aiBusy} className="rounded-lg h-8 text-xs" data-testid="ai-generate-evolution-btn">
-                        {aiBusy ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Sparkles className="h-3 w-3 mr-1" />} Gerar evolução IA
+                        {aiBusy ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Sparkles className="h-3 w-3 mr-1" />} Evolução IA
                       </Button>
                       <Button type="button" size="sm" variant="outline" onClick={suggestProtocol} disabled={aiBusy} className="rounded-lg h-8 text-xs" data-testid="ai-suggest-protocol-btn">
-                        <Sparkles className="h-3 w-3 mr-1" /> Sugerir protocolo
+                        <Sparkles className="h-3 w-3 mr-1" /> Protocolo
+                      </Button>
+                      <Button type="button" size="sm" variant="outline" onClick={checkContraindications} disabled={aiBusy} className="rounded-lg h-8 text-xs" data-testid="ai-contraindications-btn">
+                        <AlertCircle className="h-3 w-3 mr-1" /> Contraindicações
+                      </Button>
+                      <Button type="button" size="sm" variant="outline" onClick={generateSessionSummary} disabled={aiBusy} className="rounded-lg h-8 text-xs" data-testid="ai-session-summary-btn">
+                        <ClipboardList className="h-3 w-3 mr-1" /> Resumo da sessão
                       </Button>
                     </div>
+                    {contraAlert && (
+                      <div className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-[12px] text-yellow-800" data-testid="ai-contra-alert">
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <span className="font-semibold flex items-center gap-1"><AlertCircle className="h-3.5 w-3.5" /> Análise de contraindicações IA</span>
+                          <button type="button" onClick={() => setContraAlert(null)} className="text-[10px] hover:underline">Fechar</button>
+                        </div>
+                        <pre className="whitespace-pre-wrap font-sans text-[12px]">{contraAlert}</pre>
+                      </div>
+                    )}
                   </div>
+
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">Observações da sessão</Label>
                   <Textarea value={session.observations || ""} onChange={(e) => setSessionField("observations", e.target.value)}
                     placeholder="Observações livres do profissional..." rows={3} className="rounded-xl" data-testid="att-observations" />
                   <Label className="text-xs uppercase tracking-wider text-muted-foreground">Evolução clínica</Label>

@@ -1,0 +1,26 @@
+{
+  "summary": "Phase 4 IA Clínica Avançada — 26/26 backend tests PASS (117s). Coverage: (1) backward compat 4 types antigos (evolution/protocol/session_summary/anamnesis_summary) OK; (2) novos types Fase 4 — contraindications, improve, rewrite — todos retornam 200 com {text, model='claude-sonnet-4-5-20250929', type}; (3) contexto enriquecido validado inspecionando prompt via GET /ai/generations: ALERGIAS:Penicilina + Losartana + idade calculada (35 anos para birth_date=1990-01-01) presentes no prompt; (4) log ai_generations com todos os campos (generation_id 'aig_*', prompt, response, model, type, user_id, patient_id, session_id, created_at) e sem vazamento de _id; (5) filtros GET /ai/generations por patient_id/session_id/limit OK; (6) RBAC — profissional (bella) só vê próprias, admin vê todas; (7) robustez — sem patient_id ok, patient_id inexistente ok (patient_ctx vazio, retorna 200), type inválido retorna 422; (8) concorrência — 3 chamadas paralelas criam 3 entradas distintas com generation_id únicos; (9) regressão Fase 3 — /completeness, /timeline, /budgets, /finance/patient/{id}/summary (403 esperado para profissional), /appointments, /patients, /medical-records, dashboard todos OK.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase4_ai.py",
+    "/app/test_reports/pytest/phase4_ai_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py continua ~4860 linhas — modularização recomendada nas iterações anteriores segue válida.",
+    "_log_ai_generation trunca prompt/response em 4000 chars (linha 2581-2582). Se prompt clínico for muito grande (histórico + ficha), pode cortar informação relevante para auditoria. Considerar campo separado 'truncated: bool' ou aumentar limite para 8000.",
+    "AISummaryIn.mode é 'frontend hint' (comentário linha 2518) — só logado, não altera comportamento server-side. OK para MVP, mas se lógica de append/replace vier do backend no futuro, esse campo se torna semanticamente ambíguo.",
+    "GET /ai/generations não valida limit negativo explicitamente (aceita via min(max(1, limit), 200)) — comportamento OK.",
+    "Modelo hardcoded 'claude-sonnet-4-5-20250929' (linha 2643). Se Anthropic depreca, precisa mudar em 1 lugar — ok, mas considerar env var LLM_MODEL para facilitar A/B.",
+    "Endpoint POST /ai/generate não tem rate-limiting explícito. Concorrência com 3 calls simultâneas OK, mas usuário malicioso poderia gerar custo alto na EMERGENT_LLM_KEY. Considerar rate-limit por user_id (ex: 30 req/min)."
+  ],
+  "updated_files": ["/app/backend/tests/test_phase4_ai.py"],
+  "success_rate": {"backend": "100% (26/26)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123",
+  "seed_data_creation": "Criado paciente rico TEST_AI_{suffix} (allergies=Penicilina, medications=Losartana, birth_date=1990-01-01) via fixture scope=module. Sem cleanup automático (prefixo TEST_AI_ identificável).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Fase 4 (IA Clínica Avançada) 100% validada. Endpoints: POST /api/ai/generate (types: evolution/protocol/session_summary/anamnesis_summary/contraindications/improve/rewrite) + GET /api/ai/generations (filtros patient_id/session_id/limit + RBAC profissional=própria/admin=todas). Coleção nova ai_generations {generation_id 'aig_*', clinic_id, user_id, user_name, type, mode, patient_id, session_id, prompt (4000), response (4000), model, created_at}. Contexto enriquecido via _build_patient_ai_context: Paciente + idade + gênero + ALERGIAS + Medicações + Observações + HISTÓRICO CLÍNICO (últimos 3 medical_records excluindo session atual) + FICHA ATUAL (anamnesis_modules). Modelo: anthropic/claude-sonnet-4-5-20250929 via emergentintegrations + EMERGENT_LLM_KEY. Timeout individual até 45s (chamadas Claude podem ser lentas — todo test file rodou em 117s).",
+  "rca of the issue": "N/A — nenhum bug encontrado. Todas as features Fase 4 implementadas corretamente e regressões Fase 3 preservadas."
+}
