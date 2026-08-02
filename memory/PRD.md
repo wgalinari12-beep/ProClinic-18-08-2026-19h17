@@ -137,13 +137,25 @@ IA contextual + logs auditáveis. Backward compatível: types antigos continuam 
 - ✅ **Frontend `AttendanceDialog`** — toolbar IA contextual na aba Evolução: banner destaca "IA Clínica contextual considera paciente + histórico + ficha", **mode selector** (Anexar/Substituir/Melhorar/Reescrever), botões Evolução IA · Protocolo · Contraindicações · Resumo da sessão, banner de alerta amarelo quando IA retorna contraindicações.
 - ✅ **Backend tests**: 26/26 novos (`test_phase4_ai.py`, 117s total) — cobrindo backward compat, novos types, contexto enriquecido inspecionado via /ai/generations, RBAC, robustez, concorrência (3 chamadas paralelas → 3 generation_ids distintos).
 
-## P0 backlog — Próximas fases
-- **Modularizar `server.py`** (~4860 linhas) — split em routers.
-- **Rate-limiting** em `/ai/generate` por user_id (30 req/min) para proteger custos da EMERGENT_LLM_KEY.
-- **Env var `LLM_MODEL`** — hoje modelo hardcoded no código.
-- **Cash flow 30/60/90/180** + DRE simplificado.
-- **Módulo de comissões** por profissional.
-- **Dossiê PDF único** por sessão consolidando TCLE + evolução + recibo + orçamento.
+### Fase 5 Onda A — Reestruturação Arquitetural (parte 1) (Fev/2026)
+Documento arquitetural + quick-wins de performance + preparação aditiva de comissões. Zero mudança funcional.
+
+- ✅ **Documento arquitetural completo** — `/app/memory/REFATORACAO_FASE_5.md` (300 linhas): arquitetura atual, proposta, 5 ondas de migração, plano de rollback, débitos identificados, arquivos afetados. Plano prevê: modularização de `server.py` em routers (Onda C), split de `AttendanceDialog` em subcomponentes/context (Onda B), transações MongoDB + locks (Onda D), unificação `anamnesis + anamnesis_modules` + WebSocket + comissões ativas (Onda E).
+- ✅ **Memoização no `AttendanceDialog`** — `useCallback` importado; `useMemo` aplicado a `patientAge`, `progressSteps`, `progressPct`, `alerts`, `financialPreviewTotal`. Redução esperada de ~40% de re-renders em digitação/autosave.
+- ✅ **Arquitetura de comissões (aditivo, sem regras)** — novos campos opcionais schema-only:
+  - `ProcedureIn.commission_percent: Optional[float] = 0`
+  - `RegisterIn.default_commission_percent: Optional[float] = 0`
+  - `FinancialEntryIn.commission_amount: Optional[float] = None`
+  - `FinancialEntryIn.commission_status: Optional[Literal["pendente","paga","cancelada"]] = None`
+  - `FinancialEntryPatch` sincronizado com os mesmos campos (simetria POST↔PATCH).
+- ✅ **Backend tests**: 25/25 pass (`test_phase5_wave_a.py`) — regressão total das fases anteriores + backward compat + validação Literal + persistência via POST e PATCH.
+
+## P0 backlog — Ondas B/C/D/E
+- **Onda B** — Split do `AttendanceDialog` em `AttendanceContext` + sub-componentes memoizados (`AttendanceSmartHeader`, `AttendanceFooter`, `TabFicha`, `TabEvolucao`, `TabPrescricao`, `TabOrcamento`, `TabAssinatura`, `AiToolbar`).
+- **Onda C** — Split de `server.py` (~4867 linhas) em routers por domínio (`auth.py`, `patients.py`, `attendance.py`, `finance.py`, `ai.py`, `super_admin.py`, `subscriptions.py`, `documents.py`, `dashboard.py`).
+- **Onda D** — Transações MongoDB atômicas no `finalize_attendance`; coleção `session_locks` com TTL + heartbeat + `/attendance/{sid}/lock` endpoint.
+- **Onda E** — Unificação `anamnesis` + `anamnesis_modules` (double-write + migration); infra WebSocket (`/ws?token=`) + eventos `attendance.*` / `financial.*`; **ativação das regras de comissão** (cálculo automático `commission_amount = amount × procedure.commission_percent` no `financial_entries` insert; transição `pendente→paga` acompanhando o entry pai).
+- **Cross-onda**: rate-limiting em `/ai/generate` (proteger custo EMERGENT_LLM_KEY).
 
 ## P0 backlog — Fase 2.3B / paralelo
 - Import DOCX + PDF como modelos.

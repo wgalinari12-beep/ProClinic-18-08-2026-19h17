@@ -201,6 +201,9 @@ class FinancialEntryPatch(BaseModel):
     professional_id: Optional[str] = None
     cost_center: Optional[str] = None
     notes: Optional[str] = None
+    # ⭐ Fase 5 Onda A: simetria com FinancialEntryIn para PATCH de comissões (schema-only)
+    commission_amount: Optional[float] = None
+    commission_status: Optional[Literal["pendente", "paga", "cancelada"]] = None
 
 
 class FinancialEntryOut(FinancialEntryIn):
