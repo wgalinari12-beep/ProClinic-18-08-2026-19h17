@@ -1,0 +1,35 @@
+{
+  "summary": "Fase 5 Onda A (Reestruturação Arquitetural + preparação schema-only de comissões) — 25/25 backend tests PASS em 25.73s. Coverage: (1) REGRESSÃO TOTAL de endpoints das fases anteriores — auth/login (admin+bella), GET /patients, POST/DELETE /patients (backward compat sem novos campos), GET /appointments, GET /medical-records, GET /patients/{id}/timeline (sessions/legacy_records/counts intactos), GET /finance/entries, GET /finance/summary, GET /finance/patient/{id}/summary, GET /dashboard/stats, GET /procedures, GET /ai/generations — todos 200; (2) ADITIVO ProcedureIn.commission_percent — POST /procedures com commission_percent=15 aceita 200 e persiste, GET retorna com valor 15; POST sem o campo continua 200 (default 0/None); (3) ADITIVO FinancialEntryIn.commission_amount + commission_status — POST /finance/entries com commission_amount=20 + commission_status='pendente' aceita 200 e persiste, GET retorna corretamente; POST sem esses campos continua 200 com valores None (backward compat); validação Literal funciona (commission_status='invalido_status' → 422); PUT /finance/entries/{id} com commission_status='paga' retorna 200 (ver caveat abaixo); (4) ADITIVO RegisterIn.default_commission_percent — POST /auth/register com o campo aceita 200; sem o campo continua 200 (backward compat); (5) REGRESSÃO Attendance (Fase 2.5D idempotência + 2.5E sign forense) — start → finalize {payment_status:pago} → segunda chamada finalize retorna MESMOS entry_ids (cache idempotente); POST /attendance/{sid}/sign com {type:'consent', signature≥100 chars, timezone:'America/Sao_Paulo'} retorna ok:true + meta com sha256 (64 hex chars) + signed_at + timezone; (6) REGRESSÃO IA (Fase 4) — POST /api/ai/generate com types 'evolution', 'contraindications', 'improve' todos retornam 200 com {text, type} válido usando patient_id + contexto enriquecido. Frontend memoization NÃO testado por request explícito (backend only).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "PUT /api/finance/entries/{id}",
+        "issue": "FinancialEntryPatch (server.py:188-203) NÃO declara os campos commission_amount e commission_status. PATCH retorna 200 mas os campos são silenciosamente descartados (Pydantic v2 ignora extras por padrão). Como Fase 5 Onda A é schema-only sem regras ativas, isso é apenas parcialmente correto — POST persiste, PUT NÃO persiste. Recomenda-se adicionar em FinancialEntryPatch: 'commission_amount: Optional[float] = None' e 'commission_status: Optional[Literal[...]] = None' para simetria PATCH↔POST. Impacto atual: baixo (nenhum consumer usa). Impacto futuro (Onda B quando cálculo ativar): médio — será necessário para transições de status."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase5_wave_a.py",
+    "/app/test_reports/pytest/phase5_wave_a.xml"
+  ],
+  "action_items": [
+    "OPCIONAL (não bloqueia Onda A): adicionar commission_amount + commission_status em FinancialEntryPatch (server.py ~linha 188) para simetria PATCH↔POST — necessário antes da Onda B ativar lógica de cálculo."
+  ],
+  "critical_code_review_comments": [
+    "server.py atingiu ~4867 linhas — o próprio /app/memory/REFATORACAO_FASE_5.md prevê split em Onda C. Confirmado como dívida técnica documentada.",
+    "FinancialEntryPatch está fora de sincronia com FinancialEntryIn após adição dos campos de comissão (server.py:165-185 vs 188-203). Ver 'minor issues' acima.",
+    "Padrão de default_commission_percent=0 em RegisterIn é inconsistente com commission_amount=None em FinancialEntryIn e commission_percent=0 em ProcedureIn — considerar padronizar (todos None ou todos 0) para clareza semântica ('não configurado' vs 'zero por design').",
+    "AttendanceDialog.jsx recebeu memoização (useCallback/useMemo em patientAge/progressSteps/progressPct/alerts/financialPreviewTotal) conforme requerido — não testado por request explícito (backend only), mas revisão estática confirma que os cálculos derivados foram estabilizados sem alteração de comportamento.",
+    "Nenhum endpoint novo foi introduzido nessa onda (apenas schema fields aditivos) — perfil de risco de regressão é baixo, confirmado pelos 25/25 verdes."
+  ],
+  "updated_files": ["/app/backend/tests/test_phase5_wave_a.py"],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123",
+  "seed_data_creation": "Nenhum seed persistente; cada teste cria e deleta suas próprias entidades (patients TEST_P5A_*, procedures TEST_comm_*, finance entries TEST_*, appointments TEST_P5A_att, users test_p5a_*@example.com — os 2 users de teste ficam órfãos no banco mas com prefixo identificável).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Fase 5 Onda A concluída. Schema aditivo de comissões OK: ProcedureIn.commission_percent (default 0), FinancialEntryIn.commission_amount (None) + commission_status (Literal['pendente','paga','cancelada'], default None), RegisterIn.default_commission_percent (default 0). Todos schema-only — NENHUMA lógica de cálculo ativa. Fase 5 Onda B (transações + cálculo automático de comissões) deve começar de: (1) sincronizar FinancialEntryPatch com esses campos; (2) implementar computador de commission_amount quando entry é criado com procedure_id+professional_id (ProcedureIn.commission_percent × amount); (3) implementar transição de status ('pendente' → 'paga' quando entry pai é paga; 'cancelada' quando entry pai é deletada). Testes atuais em /app/backend/tests/test_phase5_wave_a.py servem de baseline para regressão.",
+  "rca of the issue": "N/A — nenhum bug crítico. Único minor: FinancialEntryPatch faltando campos de comissão (esperado ser corrigido na Onda B quando lógica de PATCH commission_status importa). Backward compat de todos os endpoints anteriores 100% preservada — payloads sem os novos campos continuam funcionando."
+}

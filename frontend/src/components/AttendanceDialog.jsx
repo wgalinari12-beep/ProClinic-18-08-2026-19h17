@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "@/lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -350,8 +350,8 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
     }
   };
 
-  // ⭐ Fase 3: helpers para UX premium
-  const patientAge = (() => {
+  // ⭐ Fase 5 Onda A: memoização das derivações caras
+  const patientAge = useMemo(() => {
     const bd = patient?.birth_date;
     if (!bd) return null;
     try {
@@ -362,9 +362,9 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       if (m < 0 || (m === 0 && now.getDate() < d.getDate())) a--;
       return a > 0 && a < 130 ? a : null;
     } catch { return null; }
-  })();
+  }, [patient?.birth_date]);
 
-  const progressSteps = (() => {
+  const progressSteps = useMemo(() => {
     if (!session) return [];
     const budgetOk = !!linkedBudget && (linkedBudget.total || 0) > 0;
     return [
@@ -375,10 +375,14 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       { key: "orcamento", label: "Orçamento", done: budgetOk },
       { key: "finalizacao", label: "Finalização", done: session.status === "concluido" },
     ];
-  })();
-  const progressPct = progressSteps.length > 0 ? Math.round((progressSteps.filter((s) => s.done).length / progressSteps.length) * 100) : 0;
+  }, [session, linkedBudget]);
 
-  const alerts = (() => {
+  const progressPct = useMemo(
+    () => (progressSteps.length > 0 ? Math.round((progressSteps.filter((s) => s.done).length / progressSteps.length) * 100) : 0),
+    [progressSteps]
+  );
+
+  const alerts = useMemo(() => {
     const arr = [];
     if (patient?.allergies) arr.push({ level: "danger", label: "Alergia registrada", detail: patient.allergies });
     if (patient?.medications) arr.push({ level: "info", label: "Medicações em uso", detail: patient.medications });
@@ -387,9 +391,12 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       arr.push({ level: "info", label: "Nenhuma foto capturada" });
     if (financeSummary?.total_vencido > 0) arr.push({ level: "warn", label: `Paciente com R$ ${(financeSummary.total_vencido).toLocaleString("pt-BR", {minimumFractionDigits:2})} em atraso` });
     return arr;
-  })();
+  }, [patient?.allergies, patient?.medications, session, financeSummary?.total_vencido]);
 
-  const financialPreviewTotal = linkedBudget?.total || appointment?.price || 0;
+  const financialPreviewTotal = useMemo(
+    () => linkedBudget?.total || appointment?.price || 0,
+    [linkedBudget?.total, appointment?.price]
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

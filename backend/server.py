@@ -69,6 +69,8 @@ class RegisterIn(BaseModel):
     password: str
     name: str
     role: RoleType = "recepcao"
+    # ⭐ Fase 5 Onda A: preparação de comissões (schema-only)
+    default_commission_percent: Optional[float] = 0
 
 
 class LoginIn(BaseModel):
@@ -178,6 +180,9 @@ class FinancialEntryIn(BaseModel):
     installment_group_id: Optional[str] = None
     installment_number: Optional[int] = None
     installment_total: Optional[int] = None
+    # ⭐ Fase 5 Onda A: preparação de comissões (schema-only)
+    commission_amount: Optional[float] = None
+    commission_status: Optional[Literal["pendente", "paga", "cancelada"]] = None
 
 
 class FinancialEntryPatch(BaseModel):
@@ -2873,6 +2878,8 @@ class ProcedureIn(BaseModel):
     duration_minutes: int = 60
     category: Optional[str] = None
     active: bool = True
+    # ⭐ Fase 5 Onda A: preparação de arquitetura de comissões (schema-only, sem regras ativas)
+    commission_percent: Optional[float] = 0
 
 
 @api_router.get("/procedures")
