@@ -163,7 +163,26 @@ Redesign visual completo do dialog de atendimento. ZERO mudança em backend/APIs
 - ✅ **Acessibilidade** — `DialogTitle` + `DialogDescription` em `sr-only` mantidos para screen readers quando o Smart Header assume.
 - ✅ **Backend regression**: 171/171 tests PASS em 7 suites (Fase 2 + 2.5B/C/D/E + 4 + 5A). Redesign visual **confirmado como zero-impacto**.
 
-## P0 backlog — Ondas B/C/D/E (Refatoração Fase 5)
+### Fase Ficha Premium — Reordenação + Novos Módulos (Fev/2026)
+Fundamento estrutural para o prontuário premium de clínica de estética avançada. **Zero quebra** — mudanças puramente aditivas.
+
+- ✅ **Reordenação das sub-abas da Ficha**: `Geral → Anamnese`, e nova ordem: **Anamnese · Facial · Injetáveis · Corporal · Capilar · Epilação**.
+- ✅ **Novo módulo `injetaveis`** — schema com procedimento planejado (chips: Botox/HA/Fio PDO/Bioestimulador/Skinbooster/Mesoterapia), regiões faciais (frontal/glabela/periorbital/malar/lábios/mento), produto (marca/lote/validade/fabricante/quantidade), relatório final.
+- ✅ **Novo módulo `epilacao`** — Fitzpatrick I-VI, pigmento/espessura/frequência, métodos utilizados, áreas a tratar (12 opções corporais), sensibilidade, contraindicações, observações.
+- ✅ **Backend `ficha_snapshot`** e `_build_patient_ai_context` extendidos para incluir os 2 novos módulos no snapshot do medical_record e no contexto da IA.
+- ✅ **`MODULE_LABELS`** renomeado: `geral → "Anamnese"`, novos `injetaveis` e `epilacao`.
+- ✅ **Backward compat**: modules antigos (`geral`, `facial`, `corporal`, `capilar`) continuam funcionando. Documentos com `module=geral` continuam visíveis. FichaForm renderiza dinamicamente pelo schema.
+- ✅ **Validação visual**: screenshot confirma ordem correta + "Anamnese" como default. Backend restart OK. Lint clean.
+
+## Roadmap "Ficha Premium" — Próximas ondas
+- **F.PREMIUM.1** — Novos tipos de field no FichaForm: `card_select` (cards visuais Fitzpatrick coloridos), `image_card_select` (grau acne, cicatrizes, rosácea, discromias com imagens), `checkbox_group` (histórico médico com 11 doenças), `medication_table` (Medicamento/Dose/Frequência), `mapa_facial` (SVG interativo com marcação de pontos).
+- **F.PREMIUM.2** — Popular Anamnese Premium com todos os cards (Fitzpatrick 6 cores, Baumann 16 tipos, Acne I-V, cicatrizes 4 tipos, Rosácea 4 subtipos, discromias 4, olheiras 4, flacidez, rugas, biotipo).
+- **F.PREMIUM.3** — Cálculos automáticos: IMC (peso/altura²), Petroski (densidade→% gordura), classificação de risco antropométrico.
+- **F.PREMIUM.4** — Tricoscopia com upload múltiplo em galeria (já suporta via PhotoUploader existente).
+- **F.PREMIUM.5** — Ficha exportável em PDF premium.
+- **F.PREMIUM.6** — IA contextual pré-alimentada com dados da anamnese Premium para gerar protocolos personalizados.
+
+**Nota importante**: a Ficha Premium completa (com cards ilustrados, escalas visuais Fitzpatrick coloridos, mapa facial interativo, tabela de medicações, todas as escalas Savin/Norwood-Hamilton/Baumann com imagens) requer ~3.000 linhas de UI adicional + assets de imagens ilustrativas. Fundamento estrutural entregue nesta sessão; ondas F.PREMIUM.1-6 completarão o padrão visual premium mantendo o mesmo backend aditivo.
 - **Onda B**: Split `AttendanceDialog` (agora ~890 linhas) em `AttendanceContext` + `AttendanceSmartHeader` + `AttendanceFooter` + `TabFicha/Evolucao/Prescricao/Orcamento/Assinatura` + `AiToolbar` + hooks `useAttendanceSession`/`useAttendanceProgress`.
 - **Onda C**: Split `server.py` (~4867 linhas) em routers por domínio.
 - **Onda D**: Transações MongoDB atômicas no `finalize_attendance` + `session_locks` com TTL + heartbeat.

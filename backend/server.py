@@ -1994,7 +1994,7 @@ async def finalize_attendance(
         ficha_snapshot = {}
         for fd in ficha_docs:
             mod_name = fd.get("module")
-            if mod_name in {"geral", "facial", "corporal", "capilar"}:
+            if mod_name in {"geral", "facial", "corporal", "capilar", "injetaveis", "epilacao"}:
                 ficha_snapshot[mod_name] = {
                     "module_id": fd.get("module_id"),
                     "answers": fd.get("answers") or {},
@@ -2765,7 +2765,7 @@ async def patient_timeline(patient_id: str, user: dict = Depends(get_current_use
                 "answers": m.get("answers") or {},
                 "photos": m.get("photos") or [],
                 "captured_at": m.get("updated_at") or m.get("created_at"),
-            } for m in mods if m.get("module") in {"geral", "facial", "corporal", "capilar"}}
+            } for m in mods if m.get("module") in {"geral", "facial", "corporal", "capilar", "injetaveis", "epilacao"}}
 
         # signed_docs vinculados ao appointment
         signed_docs = []

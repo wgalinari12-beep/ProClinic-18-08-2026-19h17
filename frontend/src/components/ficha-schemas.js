@@ -101,9 +101,49 @@ export const SCHEMA_CAPILAR = [
   { key: "habitos_capilar", label: "Hábitos / rotina capilar", type: "textarea", full: true },
 ];
 
+// ⭐ Nova aba - Injetáveis Premium (Fase Ficha Premium)
+export const SCHEMA_INJETAVEIS = [
+  { key: "procedimento_planejado", label: "Procedimento planejado", type: "chips",
+    options: ["Toxina Botulínica", "Ácido Hialurônico", "Fio PDO", "Bioestimulador", "Skinbooster", "Mesoterapia"] },
+  { key: "regiao_frontal", label: "Região frontal — pontos e produtos", type: "textarea", full: true },
+  { key: "regiao_glabela", label: "Região glabelar — pontos e produtos", type: "textarea", full: true },
+  { key: "regiao_periorbital", label: "Região periorbital — pontos e produtos", type: "textarea", full: true },
+  { key: "regiao_malar", label: "Região malar / zigomática", type: "textarea", full: true },
+  { key: "regiao_labios", label: "Lábios", type: "textarea", full: true },
+  { key: "regiao_mento", label: "Mento / mandíbula", type: "textarea", full: true },
+  { key: "produto_marca", label: "Marca do produto" },
+  { key: "produto_lote", label: "Lote" },
+  { key: "produto_validade", label: "Validade", type: "date" },
+  { key: "produto_fabricante", label: "Fabricante" },
+  { key: "quantidade_total", label: "Quantidade total aplicada (UI ou ml)" },
+  { key: "relatorio_final", label: "Relatório final dos injetáveis", type: "textarea", full: true },
+];
+
+// ⭐ Nova aba - Epilação Premium
+export const SCHEMA_EPILACAO = [
+  { key: "fototipo_fitzpatrick", label: "Fototipo (Fitzpatrick)", type: "select",
+    options: ["Tipo I", "Tipo II", "Tipo III", "Tipo IV", "Tipo V", "Tipo VI"] },
+  { key: "pigmento_pelo", label: "Pigmento do pelo",
+    type: "select", options: ["Muito claro", "Claro", "Castanho claro", "Castanho escuro", "Preto"] },
+  { key: "espessura_pelo", label: "Espessura do pelo",
+    type: "select", options: ["Fino", "Médio", "Grosso"] },
+  { key: "frequencia_epilacao", label: "Frequência atual de epilação",
+    type: "select", options: ["Semanal", "Quinzenal", "Mensal", "Bimestral", "Eventual"] },
+  { key: "metodo_utilizado", label: "Métodos previamente utilizados", type: "chips",
+    options: ["Lâmina", "Cera", "Laser", "Linha", "Pinça", "Depilador elétrico"] },
+  { key: "areas_tratadas", label: "Áreas a tratar", type: "chips",
+    options: ["Buço", "Queixo", "Axilas", "Braços", "Antebraços", "Peitoral", "Abdômen",
+              "Costas", "Virilha", "Coxas", "Pernas", "Glúteos"] },
+  { key: "sensibilidade_previa", label: "Sensibilidade prévia (dor, foliculite, alergia)", type: "textarea", full: true },
+  { key: "contraindicacoes_epi", label: "Contraindicações identificadas", type: "textarea", full: true },
+  { key: "observacoes_epi", label: "Observações", type: "textarea", full: true },
+];
+
 export const MODULE_LABELS = {
-  geral: "Anamnese Geral",
-  facial: "Anamnese Facial",
-  corporal: "Anamnese Corporal",
-  capilar: "Anamnese Capilar / Tricologia",
+  geral: "Anamnese",
+  facial: "Facial",
+  injetaveis: "Injetáveis",
+  corporal: "Corporal",
+  capilar: "Capilar",
+  epilacao: "Epilação",
 };

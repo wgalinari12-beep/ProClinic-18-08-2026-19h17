@@ -20,13 +20,16 @@ import CompletePaymentDialog from "@/components/CompletePaymentDialog";
 import DocumentGenerator from "@/components/DocumentGenerator";
 import {
   SCHEMA_GERAL, SCHEMA_FACIAL, SCHEMA_CORPORAL, SCHEMA_CAPILAR,
+  SCHEMA_INJETAVEIS, SCHEMA_EPILACAO,
 } from "@/components/ficha-schemas";
 
 const MODULE_OPTIONS = [
-  { key: "geral", label: "Geral", schema: SCHEMA_GERAL },
+  { key: "geral", label: "Anamnese", schema: SCHEMA_GERAL },
   { key: "facial", label: "Facial", schema: SCHEMA_FACIAL },
+  { key: "injetaveis", label: "Injetáveis", schema: SCHEMA_INJETAVEIS },
   { key: "corporal", label: "Corporal", schema: SCHEMA_CORPORAL },
   { key: "capilar", label: "Capilar", schema: SCHEMA_CAPILAR },
+  { key: "epilacao", label: "Epilação", schema: SCHEMA_EPILACAO },
 ];
 
 function fmtDuration(s) {
