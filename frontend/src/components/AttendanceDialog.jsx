@@ -351,6 +351,19 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   };
 
   // ⭐ Fase 5 Onda A: memoização das derivações caras
+  const [scrollY, setScrollY] = useState(0);
+  const [focusMode, setFocusMode] = useState(false);
+  const bodyRef = useRef(null);
+  const compactHeader = scrollY > 100 || focusMode;
+
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const onScroll = () => setScrollY(el.scrollTop);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [stage]);
+
   const patientAge = useMemo(() => {
     const bd = patient?.birth_date;
     if (!bd) return null;
@@ -402,134 +415,126 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         data-testid="attendance-dialog"
-        className="max-w-5xl w-[95vw] rounded-2xl p-0 max-h-[92vh] overflow-hidden flex flex-col"
+        className="max-w-6xl w-[97vw] rounded-2xl p-0 max-h-[95vh] overflow-hidden flex flex-col"
         onPointerDownOutside={(e) => e.preventDefault()}
         onInteractOutside={(e) => e.preventDefault()}
       >
-        {/* Header */}
-        <DialogHeader className="border-b border-border px-6 py-4 shrink-0">
-          <div className="flex items-center justify-between">
-            <div>
-              <DialogTitle className="font-display text-xl tracking-tight">
-                {appointment?.patient_name || "Atendimento"}
-              </DialogTitle>
-              <DialogDescription className="text-xs text-muted-foreground mt-1">
-                {appointment?.procedure} · {appointment?.professional_name || "—"}
-              </DialogDescription>
+        {/* Header — visível apenas em loading/completion; em inProgress o Smart Header assume */}
+        {stage !== "inProgress" && (
+          <DialogHeader className="border-b border-border px-6 py-4 shrink-0">
+            <div className="flex items-center justify-between">
+              <div>
+                <DialogTitle className="font-display text-xl tracking-tight">
+                  {appointment?.patient_name || "Atendimento"}
+                </DialogTitle>
+                <DialogDescription className="text-xs text-muted-foreground mt-1">
+                  {appointment?.procedure} · {appointment?.professional_name || "—"}
+                </DialogDescription>
+              </div>
             </div>
-            <div className="flex items-center gap-3">
-              {stage === "inProgress" && (
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary/10 ring-1 ring-primary/30">
-                  <Clock className="h-3.5 w-3.5 text-primary" />
-                  <span className="font-mono text-sm" data-testid="attendance-timer">{fmtDuration(seconds)}</span>
-                </div>
-              )}
-              {stage === "inProgress" && (
-                <Button variant="outline" size="sm" onClick={() => setDocGenOpen(true)} data-testid="attendance-doc-btn" className="rounded-xl h-8">
-                  <FileSignature className="h-3.5 w-3.5 mr-1.5" /> Documento
-                </Button>
-              )}
-              {savedAt && stage === "inProgress" && (
-                <Badge variant="outline" className="text-[10px] font-normal" data-testid="attendance-saved-indicator">
-                  <CheckCircle2 className="h-2.5 w-2.5 mr-1 text-success" />
-                  Rascunho salvo {savedAt.toLocaleTimeString("pt-BR").slice(0, 5)}
-                </Badge>
-              )}
-            </div>
-          </div>
-        </DialogHeader>
+          </DialogHeader>
+        )}
+        {/* Acessibilidade: garantir DialogTitle sempre presente para screen readers em inProgress */}
+        {stage === "inProgress" && (
+          <>
+            <DialogTitle className="sr-only">{appointment?.patient_name || "Atendimento"}</DialogTitle>
+            <DialogDescription className="sr-only">
+              {appointment?.procedure} · {appointment?.professional_name || ""}
+            </DialogDescription>
+          </>
+        )}
 
-        {/* ⭐ Fase 3: Smart Header + Progress Bar + Alerts (só em inProgress) */}
+        {/* ⭐ Redesign 2026: Smart Header compacto/expandido + Foco */}
         {stage === "inProgress" && patient && (
-          <div className="border-b border-border px-6 py-3 bg-muted/30 shrink-0" data-testid="attendance-smart-header">
-            <div className="flex items-center gap-4 flex-wrap">
-              {/* Avatar */}
-              <div className="h-12 w-12 rounded-full ring-2 ring-primary/30 overflow-hidden bg-primary/10 flex items-center justify-center shrink-0">
-                {patient.photo_url ? (
-                  <img src={`${process.env.REACT_APP_BACKEND_URL}${patient.photo_url}`} alt="" className="h-full w-full object-cover" />
-                ) : (
-                  <span className="font-display text-lg text-primary font-semibold">{(patient.name || "?").slice(0, 1).toUpperCase()}</span>
-                )}
-              </div>
-              {/* Info */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-sm truncate">{patient.name}</span>
-                  {patientAge != null && (
-                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{patientAge} anos</span>
-                  )}
-                  {patient.gender && <span className="text-[10px] uppercase tracking-wider text-muted-foreground">· {patient.gender}</span>}
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-3 flex-wrap" data-testid="smart-header-meta">
-                  {lastAttendance && <span>Último: {new Date(lastAttendance).toLocaleDateString("pt-BR")}</span>}
-                  {financeSummary && (
-                    <>
-                      {financeSummary.total_pendente > 0 && (
-                        <span className="text-yellow-600">Pendente: R$ {financeSummary.total_pendente.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</span>
-                      )}
-                      {financeSummary.total_vencido > 0 && (
-                        <span className="text-destructive font-semibold">⚠ R$ {financeSummary.total_vencido.toLocaleString("pt-BR", { minimumFractionDigits: 2 })} vencido</span>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-              {/* Health chips (allergies / medications) */}
-              <div className="flex items-center gap-1.5 flex-wrap justify-end">
-                {patient.allergies && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 text-destructive px-2 py-0.5 text-[10px] ring-1 ring-destructive/30" data-testid="chip-allergies" title={patient.allergies}>
-                    <AlertCircle className="h-3 w-3" strokeWidth={1.5} /> Alergia
-                  </span>
-                )}
-                {patient.medications && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 text-primary px-2 py-0.5 text-[10px] ring-1 ring-primary/30" title={patient.medications} data-testid="chip-medications">
-                    <Pill className="h-3 w-3" strokeWidth={1.5} /> Medicações
-                  </span>
-                )}
-              </div>
-            </div>
+          <div
+            className={`border-b border-border bg-card shrink-0 transition-all duration-200 ${compactHeader ? "px-4 py-1.5" : "px-6 py-3"}`}
+            data-testid="attendance-smart-header"
+            data-compact={compactHeader}
+          >
+            {/* Linha principal - sempre visível (~48px em compact) */}
+            <div className="flex items-center gap-3 min-h-[36px]">
+              <span className="font-medium text-sm truncate flex-shrink-0" data-testid="hdr-patient-name">{patient.name}</span>
+              {patientAge != null && <span className="text-[11px] text-muted-foreground">{patientAge} anos</span>}
+              {patient.phone && !compactHeader && <span className="hidden md:inline text-[11px] text-muted-foreground">· {patient.phone}</span>}
+              {!compactHeader && appointment?.procedure && (
+                <span className="hidden md:inline text-[11px] text-muted-foreground truncate">· {appointment.procedure}</span>
+              )}
+              {!compactHeader && lastAttendance && (
+                <span className="hidden lg:inline text-[10px] text-muted-foreground">· Último: {new Date(lastAttendance).toLocaleDateString("pt-BR")}</span>
+              )}
 
-            {/* Progress bar */}
-            <div className="mt-3" data-testid="attendance-progress">
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {progressSteps.map((s) => (
-                    <span key={s.key} className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full ${s.done ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"}`}
-                      data-testid={`progress-step-${s.key}-${s.done ? "done" : "pending"}`}>
-                      {s.done && <CheckCircle2 className="h-2.5 w-2.5" />}
-                      {s.label}
-                    </span>
+              <span className="text-[10px] font-mono text-muted-foreground bg-muted rounded px-1.5 py-0.5 ml-auto" data-testid="attendance-timer">
+                {String(Math.floor(seconds / 3600)).padStart(2, "0")}:{String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")}:{String(seconds % 60).padStart(2, "0")}
+              </span>
+
+              {/* Compact alert chips (sempre visíveis, clicáveis) */}
+              {alerts.length > 0 && (
+                <div className="flex items-center gap-1" data-testid="attendance-alert-chips">
+                  {alerts.slice(0, 4).map((a, i) => (
+                    <button key={i} type="button" title={`${a.label}${a.detail ? " — " + a.detail : ""}`}
+                      className={`inline-flex items-center h-6 w-6 justify-center rounded-full ring-1 ${
+                        a.level === "danger" ? "bg-destructive/10 text-destructive ring-destructive/30" :
+                        a.level === "warn" ? "bg-yellow-500/10 text-yellow-700 ring-yellow-500/30" :
+                        "bg-primary/10 text-primary ring-primary/30"
+                      }`}
+                      data-testid={`alert-chip-${a.level}-${i}`}>
+                      <AlertCircle className="h-3 w-3" strokeWidth={1.5} />
+                    </button>
                   ))}
                 </div>
-                <span className="text-[10px] font-mono text-muted-foreground">{progressPct}%</span>
-              </div>
-              <div className="h-1 rounded-full bg-muted overflow-hidden">
-                <div className="h-full bg-gradient-to-r from-primary to-success transition-all" style={{ width: `${progressPct}%` }} />
-              </div>
+              )}
+
+              <Button
+                type="button"
+                size="sm"
+                variant={focusMode ? "default" : "outline"}
+                onClick={() => setFocusMode((v) => !v)}
+                className="h-7 px-2 text-[10px] rounded-lg"
+                data-testid="btn-focus-mode"
+                title="Modo Foco: oculta alertas e progresso para máxima área clínica"
+              >
+                {focusMode ? "Sair do Foco" : "Foco"}
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDocGenOpen(true)}
+                className="h-7 rounded-lg text-[10px]"
+                data-testid="btn-open-document-generator"
+              >
+                <FileSignature className="h-3 w-3 mr-1" />
+                Doc
+              </Button>
             </div>
 
-            {/* Alerts row */}
-            {alerts.length > 0 && (
-              <div className="mt-3 flex items-start gap-1.5 flex-wrap" data-testid="attendance-alerts">
-                {alerts.map((a, i) => (
-                  <span key={i}
-                    title={a.detail}
-                    className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] ${
-                      a.level === "danger" ? "bg-destructive/10 text-destructive ring-1 ring-destructive/30" :
-                      a.level === "warn" ? "bg-yellow-500/10 text-yellow-700 ring-1 ring-yellow-500/30" :
-                      "bg-primary/10 text-primary ring-1 ring-primary/30"
-                    }`}>
-                    <AlertCircle className="h-3 w-3" />
-                    {a.label}
-                  </span>
-                ))}
-              </div>
+            {/* Extras visíveis apenas em modo expandido e não-foco */}
+            {!compactHeader && (
+              <>
+                {/* Progress bar (24px alt total) */}
+                <div className="mt-2 flex items-center gap-3" data-testid="attendance-progress">
+                  <div className="flex items-center gap-1 flex-wrap flex-1">
+                    {progressSteps.map((s) => (
+                      <span key={s.key}
+                        className={`inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded ${s.done ? "text-success" : "text-muted-foreground"}`}
+                        data-testid={`progress-step-${s.key}-${s.done ? "done" : "pending"}`}>
+                        {s.done ? <CheckCircle2 className="h-2.5 w-2.5" /> : <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/30" />}
+                        {s.label}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="h-1 rounded-full bg-muted overflow-hidden w-32">
+                    <div className="h-full bg-gradient-to-r from-primary to-success transition-all" style={{ width: `${progressPct}%` }} />
+                  </div>
+                  <span className="text-[10px] font-mono text-muted-foreground">{progressPct}%</span>
+                </div>
+              </>
             )}
           </div>
         )}
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto">
+        <div ref={bodyRef} className="flex-1 overflow-y-auto">
           {stage === "loading" && (
             <div className="flex items-center justify-center py-20">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
@@ -683,7 +688,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                     placeholder="Observações livres do profissional..." rows={3} className="rounded-xl" data-testid="att-observations" />
                   <Label className="text-xs uppercase tracking-wider text-muted-foreground">Evolução clínica</Label>
                   <Textarea value={session.evolution || ""} onChange={(e) => setSessionField("evolution", e.target.value)}
-                    placeholder="Descreva a evolução clínica desta sessão..." rows={6} className="rounded-xl" data-testid="att-evolution" />
+                    placeholder="Descreva a evolução clínica desta sessão..." rows={14} className="rounded-xl min-h-[300px]" data-testid="att-evolution" />
                   <Label className="text-xs uppercase tracking-wider text-muted-foreground">Protocolo aplicado</Label>
                   <Textarea value={session.protocols || ""} onChange={(e) => setSessionField("protocols", e.target.value)}
                     placeholder="Protocolo, técnica, produtos utilizados..." rows={3} className="rounded-xl" data-testid="att-protocols" />
@@ -714,7 +719,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                   </div>
                   <Label className="text-xs uppercase tracking-wider text-muted-foreground">Orientações / Receituário</Label>
                   <Textarea value={session.prescriptions || ""} onChange={(e) => setSessionField("prescriptions", e.target.value)}
-                    placeholder="Orientações pós-procedimento, cuidados, retornos..." rows={10} className="rounded-xl" data-testid="att-prescriptions" />
+                    placeholder="Orientações pós-procedimento, cuidados, retornos..." rows={16} className="rounded-xl min-h-[380px]" data-testid="att-prescriptions" />
                 </TabsContent>
 
                 {/* Orçamento */}

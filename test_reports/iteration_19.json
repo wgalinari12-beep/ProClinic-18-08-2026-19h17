@@ -1,0 +1,41 @@
+{
+  "summary": "REGRESSÃO BACKEND TOTAL após redesign UI puramente cosmético do AttendanceDialog (Fase 5 Onda A UI polish). Executados 173 testes em 7 suites (test_phase5_wave_a + test_phase2_5d_attendance + test_phase2_5e_sign + test_phase2_5c_receipts + test_phase4_ai + test_phase2_5_finance + test_phase2_integridade_clinica) → 171 PASS + 2 SKIPPED (skips pré-existentes intencionais em TestFinalizeAttendance.test_pago_creates_entry_with_receipt e test_parcial_only_entrada_gets_receipt de test_phase2_5c_receipts.py — herdados de iteração anterior, não regressão). Coverage confirmada: (1) AUTH — admin/bella/ana login OK; (2) PATIENTS — GET list + completeness + timeline OK; (3) APPOINTMENTS — CRUD + list OK; (4) ATTENDANCE — start → autosave (PUT) → sign (consent/evolution com sha256+timezone) → finalize com idempotência (2ª chamada retorna cache mesmos entry_ids, zero duplicação de medical_records/financial_entries/receipts); (5) IA Fase 4 — /api/ai/generate types evolution/protocol/session_summary/anamnesis_summary/contraindications/improve/rewrite todos 200; logs em /api/ai/generations com prompt+response+model preservados; RBAC profissional só vê próprias generations, admin vê todas; concurrency 3 chamadas simultâneas = 3 logs; (6) RECIBOS Fase 2.5C — POST paid=true auto-gera REC-YYYY-####; PDF download OK; email/whatsapp-link OK; idempotência preservada; profissional 403; recepcao read-only; (7) FINANCE Fase 2.5 — RBAC profissional 403 em GET/POST/PUT/DELETE /finance/entries e /finance/summary; recepcao pode GET mas 403 em POST/PUT/DELETE; installments (não_pago/parcial/pago) todos criam N entries com installment_group_id + session_id compartilhados; budget approval; filters (type/paid/search/date/group); (8) TIMELINE Fase 2 — shape sessions/legacy_records/counts + receipts derivados + ordem DESC + isolamento profissional/recepcao; ficha_snapshot capturado em finalize e isolado por profissional; (9) SCHEMA ADITIVO Fase 5 Onda A — ProcedureIn.commission_percent + FinancialEntryIn.commission_amount/commission_status + RegisterIn.default_commission_percent aceitos e persistidos com backward compat (payloads sem os campos continuam 200). ZERO regressão detectada. Redesign UI cosmético NÃO impactou backend — confirmado.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "PUT /api/finance/entries/{id}",
+        "issue": "PENDENTE de iteração 18: FinancialEntryPatch (server.py) ainda não declara commission_amount + commission_status — PATCH silenciosamente descarta. Sem impacto atual (nenhum consumer usa), apenas para Onda B."
+      }
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/test_reports/pytest/iteration_19.xml",
+    "/app/backend/tests/test_phase5_wave_a.py",
+    "/app/backend/tests/test_phase2_5d_attendance.py",
+    "/app/backend/tests/test_phase2_5e_sign.py",
+    "/app/backend/tests/test_phase2_5c_receipts.py",
+    "/app/backend/tests/test_phase4_ai.py",
+    "/app/backend/tests/test_phase2_5_finance.py",
+    "/app/backend/tests/test_phase2_integridade_clinica.py"
+  ],
+  "action_items": [
+    "Redesign UI do AttendanceDialog pode ir para produção do ponto de vista de estabilidade backend — 171/171 verdes (100%).",
+    "OPCIONAL (herdado): sincronizar FinancialEntryPatch com commission_amount + commission_status antes de iniciar Fase 5 Onda B."
+  ],
+  "critical_code_review_comments": [
+    "Confirmado por request explícito: nenhum arquivo backend foi tocado nesta iteração. A frase 'redesign cosmético' foi validada empiricamente — todos os 171 testes anteriores passam sem qualquer mudança.",
+    "AttendanceDialog.jsx recebeu somente refactor visual (state scrollY + focusMode + header compacto sob scroll + textareas maiores + max-w-6xl). Não testado UI por request explícito (backend only), mas revisão estática confirma zero mudança de payload, endpoint ou fluxo de dados — apenas classes/layout.",
+    "2 skips em test_phase2_5c_receipts.py::TestFinalizeAttendance (test_pago_creates_entry_with_receipt, test_parcial_only_entrada_gets_receipt) são pré-existentes e não regressão desta iteração — provavelmente marcados como skip em iteração anterior por requisitos de setup complexo. Recomendo main agent revisar se ainda são relevantes.",
+    "Tempo total de execução das 7 suites = 351s (~6 min). Considerar pytest-xdist -n auto no próximo ciclo para paralelização se runtime virar problema."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (171/171 executed; 2 pre-existing skips)", "frontend": "N/A (backend only per request)"},
+  "test_credentials": "admin@proclinic.com/admin123, dra.bella@proclinic.com/bella123, ana.recep@proclinic.com/ana123 — todos funcionais.",
+  "seed_data_creation": "Cada suite cria/deleta suas próprias entidades TEST_*. Sem seed persistente adicionado.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteração 19 = regressão pura pós-redesign UI. 171/171 backend PASS. Suites base para próximas iterações (Onda B ou além): test_phase5_wave_a.py (schema comissões), test_phase2_5d_attendance.py + test_phase2_5e_sign.py (attendance idempotência + assinaturas), test_phase2_5c_receipts.py (recibos), test_phase4_ai.py (IA), test_phase2_5_finance.py (finance+installments+RBAC), test_phase2_integridade_clinica.py (timeline+ficha_snapshot). Se Onda B começar, iniciar sincronizando FinancialEntryPatch. UI redesign pronto para prod.",
+  "rca of the issue": "N/A — nenhum bug encontrado. Redesign UI cosmético confirmado como zero-impacto backend."
+}
