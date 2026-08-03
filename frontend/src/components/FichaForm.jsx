@@ -8,6 +8,11 @@ import { Sparkles, Loader2, Smartphone } from "lucide-react";
 import { toast } from "sonner";
 import PhotoUploader from "@/components/PhotoUploader";
 import MobileUploadQR from "@/components/MobileUploadQR";
+import CardSelect from "@/components/ficha-fields/CardSelect";
+import ImageCardSelect from "@/components/ficha-fields/ImageCardSelect";
+import CheckboxGroupVisual from "@/components/ficha-fields/CheckboxGroupVisual";
+import MedicationTable from "@/components/ficha-fields/MedicationTable";
+import BodyMap from "@/components/ficha-fields/BodyMap";
 
 const IMC_CLASS = (imc) => {
   if (imc < 18.5) return { label: "Abaixo do peso", color: "text-secondary" };
@@ -189,6 +194,62 @@ export default function FichaForm({ module, schema, patientId, onSaved, onAiSumm
                     );
                   })}
                 </div>
+              )}
+              {f.type === "card_select" && (
+                <CardSelect
+                  value={answers[f.key] ?? (f.multi ? [] : "")}
+                  onChange={(v) => setField(f.key, v)}
+                  options={f.options}
+                  multi={!!f.multi}
+                  columns={f.columns}
+                  testid={`ficha-${module}-${f.key}`}
+                />
+              )}
+              {f.type === "image_card_select" && (
+                <ImageCardSelect
+                  value={answers[f.key] ?? (f.multi ? [] : "")}
+                  onChange={(v) => setField(f.key, v)}
+                  options={f.options}
+                  multi={!!f.multi}
+                  columns={f.columns}
+                  allowZoom={f.allowZoom !== false}
+                  testid={`ficha-${module}-${f.key}`}
+                />
+              )}
+              {f.type === "checkbox_group_visual" && (
+                <CheckboxGroupVisual
+                  value={answers[f.key] || []}
+                  onChange={(v) => setField(f.key, v)}
+                  groups={f.groups}
+                  options={f.options}
+                  searchable={f.searchable}
+                  testid={`ficha-${module}-${f.key}`}
+                />
+              )}
+              {f.type === "medication_table" && (
+                <MedicationTable
+                  value={answers[f.key] || []}
+                  onChange={(v) => setField(f.key, v)}
+                  columns={f.columns}
+                  addLabel={f.addLabel}
+                  testid={`ficha-${module}-${f.key}`}
+                />
+              )}
+              {f.type === "body_map" && (
+                <BodyMap
+                  value={answers[f.key] || []}
+                  onChange={(v) => setField(f.key, v)}
+                  views={f.views}
+                  regionsFrontal={f.regionsFrontal}
+                  regionsPosterior={f.regionsPosterior}
+                  highlightColor={f.highlightColor}
+                  allowChipToggle={f.allowChipToggle !== false}
+                  testid={`ficha-${module}-${f.key}`}
+                />
+              )}
+              {f.type === "date" && (
+                <Input type="date" data-testid={`ficha-${module}-${f.key}`} value={answers[f.key] || ""}
+                  onChange={(e) => setField(f.key, e.target.value)} className="h-11 rounded-xl" />
               )}
               {f.help && <p className="text-[11px] text-muted-foreground/80">{f.help}</p>}
             </div>

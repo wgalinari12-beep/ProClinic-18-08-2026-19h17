@@ -174,6 +174,21 @@ Fundamento estrutural para o prontuário premium de clínica de estética avanç
 - ✅ **Backward compat**: modules antigos (`geral`, `facial`, `corporal`, `capilar`) continuam funcionando. Documentos com `module=geral` continuam visíveis. FichaForm renderiza dinamicamente pelo schema.
 - ✅ **Validação visual**: screenshot confirma ordem correta + "Anamnese" como default. Backend restart OK. Lint clean.
 
+### Fase Ficha Premium UI — Camada Visual (Fev/2026)
+Refatoração do `FichaForm` para suportar 5 tipos visuais premium. **Zero backend change**. Detalhes em `/app/memory/RELATORIO_FICHA_PREMIUM_UI.md`.
+
+- ✅ **5 componentes 100% reutilizáveis** em `/app/frontend/src/components/ficha-fields/`:
+  - `CardSelect` — cards com cor, ícone, imagem opcional, tooltip, score, classificação, nível de risco.
+  - `ImageCardSelect` — cards com imagem/ícone, zoom modal, badge, descrição.
+  - `CheckboxGroupVisual` — grupos categorizados, busca automática (>10 itens), ícones, risco por opção.
+  - `MedicationTable` — tabela dinâmica (nome/dose/frequência/observação) reutilizável para suplementos, hormônios, nutracêuticos.
+  - `BodyMap` — silhueta SVG frontal/posterior clicável, catálogo de regiões desacoplado (`body-regions.js`).
+- ✅ **25 campos migrados** para os novos tipos (Anamnese doenças/medicações/suplementos, Facial fototipo/acne/flacidez/rosácea/manchas/rugas, Injetáveis procedimento, Corporal celulite/gordura/flacidez/estrias com body maps, Capilar tipo/queda/padrão/química/couro, Epilação Fitzpatrick/pigmento/métodos/áreas).
+- ✅ **Backward compat 100%** — mesmas chaves e valores stored (`"III"`, `"Grau II"`, `["Melasma"]`), sem migração de dados.
+- ✅ **Validado via curl** POST/GET `/api/anamnesis-modules` com card_select/checkbox_group_visual/medication_table/body_map → persiste e retorna intactos.
+- ✅ **Slots prontos p/ imagens Premium** — cada opção aceita `image` URL sem refatoração; próximo passo é apenas fornecer os assets (Norwood, Savin, tipos de cabelo, procedimentos).
+- ✅ **Validação visual** — screenshots de todas as 6 abas (Anamnese, Facial, Injetáveis, Corporal, Capilar, Epilação) mostrando cards visuais, cromáticos por grau, ícones, chips categorizados e body map interativo.
+
 ## Roadmap "Ficha Premium" — Próximas ondas
 - **F.PREMIUM.1** — Novos tipos de field no FichaForm: `card_select` (cards visuais Fitzpatrick coloridos), `image_card_select` (grau acne, cicatrizes, rosácea, discromias com imagens), `checkbox_group` (histórico médico com 11 doenças), `medication_table` (Medicamento/Dose/Frequência), `mapa_facial` (SVG interativo com marcação de pontos).
 - **F.PREMIUM.2** — Popular Anamnese Premium com todos os cards (Fitzpatrick 6 cores, Baumann 16 tipos, Acne I-V, cicatrizes 4 tipos, Rosácea 4 subtipos, discromias 4, olheiras 4, flacidez, rugas, biotipo).
