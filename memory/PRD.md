@@ -150,11 +150,24 @@ Documento arquitetural + quick-wins de performance + preparação aditiva de com
   - `FinancialEntryPatch` sincronizado com os mesmos campos (simetria POST↔PATCH).
 - ✅ **Backend tests**: 25/25 pass (`test_phase5_wave_a.py`) — regressão total das fases anteriores + backward compat + validação Literal + persistência via POST e PATCH.
 
-## P0 backlog — Ondas B/C/D/E
-- **Onda B** — Split do `AttendanceDialog` em `AttendanceContext` + sub-componentes memoizados (`AttendanceSmartHeader`, `AttendanceFooter`, `TabFicha`, `TabEvolucao`, `TabPrescricao`, `TabOrcamento`, `TabAssinatura`, `AiToolbar`).
-- **Onda C** — Split de `server.py` (~4867 linhas) em routers por domínio (`auth.py`, `patients.py`, `attendance.py`, `finance.py`, `ai.py`, `super_admin.py`, `subscriptions.py`, `documents.py`, `dashboard.py`).
-- **Onda D** — Transações MongoDB atômicas no `finalize_attendance`; coleção `session_locks` com TTL + heartbeat + `/attendance/{sid}/lock` endpoint.
-- **Onda E** — Unificação `anamnesis` + `anamnesis_modules` (double-write + migration); infra WebSocket (`/ws?token=`) + eventos `attendance.*` / `financial.*`; **ativação das regras de comissão** (cálculo automático `commission_amount = amount × procedure.commission_percent` no `financial_entries` insert; transição `pendente→paga` acompanhando o entry pai).
+### Fase 5 Onda A+ — Redesign UI do AttendanceDialog (Fev/2026)
+Redesign visual completo do dialog de atendimento. ZERO mudança em backend/APIs/regras/persistência. Objetivo: maximizar área clínica.
+
+- ✅ **Header compacto sempre visível (~48-60px)** — linha única: nome + idade + telefone + procedimento + timer + chips de alerta (⚠ danger/warn/info clicáveis com tooltip) + botões **Foco** + **Doc**.
+- ✅ **Auto-compactação em scroll** — quando `bodyRef.current.scrollTop > 100`, o header se comprime automaticamente ocultando o metadata expandido (procedimento, último atendimento, progresso).
+- ✅ **Barra de progresso mínima ~24px** — 6 pills discretas horizontais (Ficha/Fotos/Evolução/Assinatura/Orçamento/Finalização) + barra gradient primary→success + `%` mono.
+- ✅ **Botão "Foco"** — força `compactHeader=true` mesmo sem scroll, oculta progresso/alertas para máxima área clínica.
+- ✅ **Área clínica maximizada** — DialogHeader legacy escondido em `stage="inProgress"` (Smart Header assume); textarea Evolução `rows=14 min-h-[300px]`; Prescrição `rows=16 min-h-[380px]`.
+- ✅ **Dialog max-w-6xl w-[97vw] max-h-[95vh]** — aproveita ~97% da viewport em desktop, mantendo responsividade.
+- ✅ **Footer sticky com Financial Preview inline** — "Salvar rascunho" + "TOTAL A LANÇAR R$ X" + "Concluir atendimento" sempre visíveis.
+- ✅ **Acessibilidade** — `DialogTitle` + `DialogDescription` em `sr-only` mantidos para screen readers quando o Smart Header assume.
+- ✅ **Backend regression**: 171/171 tests PASS em 7 suites (Fase 2 + 2.5B/C/D/E + 4 + 5A). Redesign visual **confirmado como zero-impacto**.
+
+## P0 backlog — Ondas B/C/D/E (Refatoração Fase 5)
+- **Onda B**: Split `AttendanceDialog` (agora ~890 linhas) em `AttendanceContext` + `AttendanceSmartHeader` + `AttendanceFooter` + `TabFicha/Evolucao/Prescricao/Orcamento/Assinatura` + `AiToolbar` + hooks `useAttendanceSession`/`useAttendanceProgress`.
+- **Onda C**: Split `server.py` (~4867 linhas) em routers por domínio.
+- **Onda D**: Transações MongoDB atômicas no `finalize_attendance` + `session_locks` com TTL + heartbeat.
+- **Onda E**: Unificação `anamnesis + anamnesis_modules` + infra WebSocket + ativação das regras de comissão (schema já pronto).
 - **Cross-onda**: rate-limiting em `/ai/generate` (proteger custo EMERGENT_LLM_KEY).
 
 ## P0 backlog — Fase 2.3B / paralelo
