@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import api from "@/lib/api";
+import api, { describeApiError } from "@/lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,6 +57,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   const [seconds, setSeconds] = useState(0);
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
+  const [saveError, setSaveError] = useState(null); // Auditoria: expõe última falha de autosave
   const [aiBusy, setAiBusy] = useState(false);
   const tickRef = useRef(null);
   const saveTimerRef = useRef(null);
@@ -153,10 +154,16 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
         if (opId === opIdRef.current) {
           setSession((s) => ({ ...s, ...data }));
           setSavedAt(new Date());
+          setSaveError(null);
         }
       } catch (err) {
         if (err.name !== "CanceledError" && err.name !== "AbortError") {
-          // Silent retry-on-next-change model — user will trigger new save
+          // Persistent surface: expose failure in header instead of silent swallow
+          if (opId === opIdRef.current) {
+            const msg = describeApiError(err, "Falha ao salvar rascunho");
+            setSaveError(msg);
+            console.warn("[autosave] failed:", err?.response?.status, err?.response?.data || err?.message);
+          }
         }
       }
     }, 800);
@@ -191,6 +198,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       setStage("loading");
       setTab("ficha");
       setSavedAt(null);
+      setSaveError(null);
     }
   }, [open]);
 
@@ -210,7 +218,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       setStage("inProgress");
       toast.success("Cadastro completo. Atendimento iniciado");
     } catch (e) {
-      toast.error("Erro ao salvar paciente");
+      toast.error(describeApiError(e, "Erro ao salvar paciente"));
     } finally { setBusy(false); }
   };
 
@@ -233,7 +241,8 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       });
       return data.text;
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Falha IA");
+      console.warn("[ai/generate] failed:", e?.response?.status, e?.response?.data || e?.message);
+      toast.error(describeApiError(e, `IA (${type}) indisponível`));
       return null;
     } finally { setAiBusy(false); }
   };
@@ -291,6 +300,10 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
     }
     // Save current draft, then open the payment dialog
     setBusy(true);
+    // Payload sanitizado — auditoria: garante que arrays sejam strings (URLs), sem objetos aninhados
+    const sanitizeStringArray = (v) =>
+      Array.isArray(v) ? v.filter((x) => typeof x === "string" && x.length > 0)
+                       : [];
     try {
       await api.put(`/attendance/${session.session_id}`, {
         patient_id: session.patient_id,
@@ -302,16 +315,20 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
         protocols: session.protocols || "",
         prescriptions: session.prescriptions || "",
         products_used: session.products_used || "",
-        photos_before: session.photos_before || [],
-        photos_after: session.photos_after || [],
+        photos_before: sanitizeStringArray(session.photos_before),
+        photos_after: sanitizeStringArray(session.photos_after),
         consent_signature: session.consent_signature || null,
         evolution_signature: session.evolution_signature || null,
         status: "rascunho",
         duration_seconds: seconds,
       });
+      setSaveError(null);
       setPaymentOpen(true);
     } catch (e) {
-      toast.error("Erro ao salvar rascunho");
+      console.warn("[finalize/pre-save] failed:", e?.response?.status, e?.response?.data || e?.message);
+      const msg = describeApiError(e, "Erro ao salvar rascunho");
+      setSaveError(msg);
+      toast.error(msg, { duration: 8000 });
     } finally { setBusy(false); }
   };
 
@@ -347,7 +364,8 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
       onCompleted?.();
       onOpenChange(false);
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Erro ao finalizar");
+      console.warn("[finalize/confirm] failed:", e?.response?.status, e?.response?.data || e?.message);
+      toast.error(describeApiError(e, "Erro ao finalizar atendimento"), { duration: 8000 });
     } finally {
       setBusy(false);
     }

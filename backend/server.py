@@ -1842,10 +1842,17 @@ async def update_attendance(
     update.pop("appointment_id", None)
     update.pop("patient_id", None)
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
-    res = await db.attendance_sessions.update_one(
-        {"session_id": session_id, "clinic_id": user["clinic_id"]},
-        {"$set": update},
-    )
+    try:
+        res = await db.attendance_sessions.update_one(
+            {"session_id": session_id, "clinic_id": user["clinic_id"]},
+            {"$set": update},
+        )
+    except Exception as e:
+        logging.getLogger("proclinic.attendance").exception(
+            "attendance_put_failed session=%s user=%s err=%s",
+            session_id, user.get("user_id"), repr(e)[:300],
+        )
+        raise HTTPException(status_code=500, detail=f"Falha ao persistir rascunho: {type(e).__name__}")
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Sessão não encontrada")
     doc = await db.attendance_sessions.find_one(
@@ -2661,7 +2668,32 @@ async def ai_generate(data: AISummaryIn, user: dict = Depends(get_current_user))
     try:
         reply = await chat.send_message(UserMessage(text=prompt))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro IA: {e}")
+        # Structured logging for post-mortem debugging
+        err_repr = repr(e)[:400]
+        try:
+            logging.getLogger("proclinic.ai").exception(
+                "ai_generate_failed type=%s user=%s patient=%s session=%s err=%s",
+                data.type, user.get("user_id"), data.patient_id, data.session_id, err_repr,
+            )
+        except Exception:
+            pass
+        # Human-readable detail for the frontend toast
+        cls = type(e).__name__
+        # Detect common failure modes
+        msg = str(e) or err_repr
+        if "timeout" in msg.lower():
+            detail = "IA demorou demais para responder (timeout). Tente novamente."
+        elif "rate" in msg.lower() and "limit" in msg.lower():
+            detail = "Limite de requisições da IA atingido. Aguarde alguns segundos."
+        elif "401" in msg or "unauthorized" in msg.lower() or "api key" in msg.lower():
+            detail = "Chave da IA inválida ou expirada. Contate o administrador."
+        elif "quota" in msg.lower() or "credit" in msg.lower() or "balance" in msg.lower():
+            detail = "Créditos da IA esgotados. Recarregue o Universal Key em Perfil → Gerenciar plano."
+        elif "connection" in msg.lower() or "network" in msg.lower():
+            detail = "Falha de rede ao contatar o provedor de IA. Tente novamente em instantes."
+        else:
+            detail = f"IA indisponível ({cls}). Detalhe: {msg[:150]}"
+        raise HTTPException(status_code=502, detail=detail)
     # ⭐ Fase 4: log de auditoria
     await _log_ai_generation(user, data, prompt, reply, model)
     return {"text": reply, "model": model, "type": data.type}
