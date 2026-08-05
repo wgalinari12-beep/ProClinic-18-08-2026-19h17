@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useState } from "react";
 import api from "@/lib/api";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   ChevronDown, ChevronRight, Clock, CheckCircle2, FileText,
   ClipboardList, Wallet, Receipt, PenLine, Camera, ShieldCheck,
+  FileDown, Loader2,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -20,6 +22,7 @@ const fmtDur = (s) => {
 export default function PatientClinicalTimeline({ patientId }) {
   const [data, setData] = useState(null);
   const [expanded, setExpanded] = useState(new Set());
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -31,6 +34,24 @@ export default function PatientClinicalTimeline({ patientId }) {
   }, [patientId]);
 
   useEffect(() => { load(); }, [load]);
+
+  const downloadFichaPDF = async () => {
+    setPdfBusy(true);
+    try {
+      const { data } = await api.get(`/patients/${patientId}/ficha-pdf`);
+      if (data?.url) {
+        const base = process.env.REACT_APP_BACKEND_URL || "";
+        const full = data.url.startsWith("http") ? data.url : `${base}${data.url}`;
+        window.open(full, "_blank");
+        toast.success("Ficha PDF gerada");
+      }
+    } catch (e) {
+      const msg = e?.response?.data?.detail || "Falha ao gerar PDF";
+      toast.error(msg);
+    } finally {
+      setPdfBusy(false);
+    }
+  };
 
   const toggle = (sid) => {
     setExpanded((prev) => {
@@ -47,6 +68,23 @@ export default function PatientClinicalTimeline({ patientId }) {
 
   return (
     <div className="space-y-6" data-testid="clinical-timeline">
+      {/* Actions */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h3 className="font-display text-lg font-semibold tracking-tight">Histórico Clínico</h3>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={downloadFichaPDF}
+          disabled={pdfBusy}
+          className="rounded-lg h-9 text-xs"
+          data-testid="download-ficha-pdf"
+        >
+          {pdfBusy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5 mr-1.5" />}
+          Baixar Ficha Premium (PDF)
+        </Button>
+      </div>
+
       {/* Header stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard label="Sessões" value={counts.sessions} icon={ClipboardList} tone="primary" />

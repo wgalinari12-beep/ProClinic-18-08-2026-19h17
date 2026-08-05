@@ -2831,6 +2831,180 @@ class MessageIn(BaseModel):
     channel: Literal["whatsapp", "sms", "email"] = "whatsapp"
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# FASE FICHA PREMIUM · Onda 5 — PDF Clínico Premium
+# ═════════════════════════════════════════════════════════════════════════════
+def _html_escape(v: Any) -> str:
+    if v is None:
+        return "—"
+    return (str(v)
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _format_answer(v: Any) -> str:
+    """Convert an answer value into a readable HTML fragment."""
+    if v is None or v == "":
+        return "—"
+    if isinstance(v, bool):
+        return "Sim" if v else "Não"
+    if isinstance(v, list):
+        if not v:
+            return "—"
+        # medication table? array of dicts
+        if all(isinstance(x, dict) for x in v):
+            rows = []
+            for row in v:
+                cells = " · ".join(f"{_html_escape(k)}: {_html_escape(val)}"
+                                   for k, val in row.items() if val)
+                rows.append(f"<li>{cells or '—'}</li>")
+            return "<ul style='margin:0;padding-left:14pt;'>" + "".join(rows) + "</ul>"
+        # simple array of strings
+        return ", ".join(_html_escape(x) for x in v)
+    if isinstance(v, dict):
+        parts = [f"{_html_escape(k)}: {_html_escape(val)}"
+                 for k, val in v.items() if val not in (None, "")]
+        return " · ".join(parts) or "—"
+    return _html_escape(v)
+
+
+def _render_module_html(label: str, answers: Dict[str, Any]) -> str:
+    if not answers:
+        return ""
+    rows_html = []
+    for key, val in answers.items():
+        if key.startswith("_"):  # skip computed keys / private markers
+            continue
+        pretty = key.replace("_", " ").capitalize()
+        rows_html.append(
+            f"<tr><td class='k'>{_html_escape(pretty)}</td>"
+            f"<td class='v'>{_format_answer(val)}</td></tr>"
+        )
+    if not rows_html:
+        return ""
+    return (
+        f"<h2>{_html_escape(label)}</h2>"
+        "<table class='tbl'>" + "".join(rows_html) + "</table>"
+    )
+
+
+@api_router.get("/patients/{patient_id}/ficha-pdf")
+async def patient_ficha_pdf(patient_id: str, user: dict = Depends(get_current_user)):
+    """Onda 5 · Gera PDF completo da Ficha Clínica Premium do paciente.
+    Combina todos os anamnesis_modules (geral, facial, injetáveis, corporal, capilar, epilação)
+    em um único documento com identidade visual da clínica."""
+    forbid_recepcao_clinical(user)
+    clinic_id = user["clinic_id"]
+    patient = await db.patients.find_one(
+        {"patient_id": patient_id, "clinic_id": clinic_id}, {"_id": 0}
+    )
+    if not patient:
+        raise HTTPException(status_code=404, detail="Paciente não encontrado")
+
+    clinic = await db.clinics.find_one({"clinic_id": clinic_id}, {"_id": 0}) or {}
+    primary = clinic.get("primary_color") or "#B76E79"
+
+    # Load modules (RBAC: profissional só vê próprios)
+    mod_query: Dict[str, Any] = {"clinic_id": clinic_id, "patient_id": patient_id}
+    if user.get("role") == "profissional":
+        mod_query["created_by"] = user["user_id"]
+    modules = await db.anamnesis_modules.find(mod_query, {"_id": 0}).to_list(50)
+    by_module = {m.get("module"): m for m in modules}
+
+    labels = [
+        ("geral",      "Anamnese"),
+        ("facial",     "Ficha Facial"),
+        ("injetaveis", "Injetáveis / Harmonização Facial"),
+        ("corporal",   "Ficha Corporal"),
+        ("capilar",    "Ficha Capilar (Tricologia)"),
+        ("epilacao",   "Epilação"),
+    ]
+    sections = []
+    for mod_key, mod_label in labels:
+        m = by_module.get(mod_key)
+        if not m:
+            continue
+        sections.append(_render_module_html(mod_label, m.get("answers") or {}))
+        # photos gallery
+        photos = m.get("photos") or []
+        if photos:
+            imgs = "".join(
+                f"<div class='ph'><img src='{p.get('url') if isinstance(p, dict) else p}' /></div>"
+                for p in photos[:8] if p
+            )
+            if imgs:
+                sections.append(f"<h3>Registros fotográficos — {_html_escape(mod_label)}</h3>"
+                                f"<div class='gallery'>{imgs}</div>")
+
+    if not sections:
+        raise HTTPException(status_code=400, detail="Nenhum módulo clínico preenchido")
+
+    now_br = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+    pname = patient.get("name") or "—"
+    pcpf  = patient.get("cpf") or "—"
+    pbirth = patient.get("birth_date") or "—"
+    pphone = patient.get("phone") or "—"
+
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      @page {{ size: A4; margin: 18mm 15mm; }}
+      body {{ font-family: Helvetica, Arial, sans-serif; color: #1e1e1e; font-size: 10.5pt; }}
+      .brand {{ border-bottom: 2px solid {primary}; padding-bottom: 8pt; margin-bottom: 14pt; }}
+      .brand h1 {{ font-family: Georgia, serif; font-size: 22pt; color: {primary}; margin: 0; }}
+      .brand .sub {{ color: #666; font-size: 10pt; margin-top: 2pt; }}
+      .patient {{ background: #faf6f3; border-left: 3px solid {primary};
+                 padding: 8pt 12pt; margin-bottom: 16pt; font-size: 10pt; }}
+      .patient b {{ color: {primary}; }}
+      h2 {{ font-family: Georgia, serif; font-size: 14pt; color: {primary};
+            border-bottom: 1px solid #e6ded7; padding-bottom: 4pt; margin: 20pt 0 8pt; }}
+      h3 {{ font-family: Georgia, serif; font-size: 11pt; margin: 12pt 0 6pt; color: #555; }}
+      table.tbl {{ width: 100%; border-collapse: collapse; margin-bottom: 8pt; }}
+      table.tbl td {{ padding: 4pt 6pt; border-bottom: 1px solid #f0eae5;
+                      vertical-align: top; font-size: 9.5pt; }}
+      table.tbl td.k {{ width: 32%; color: #888; text-transform: capitalize; }}
+      table.tbl td.v {{ color: #1e1e1e; }}
+      .gallery {{ margin: 4pt 0; }}
+      .gallery .ph {{ display: inline-block; width: 28%; margin: 1%; }}
+      .gallery .ph img {{ width: 100%; height: auto; border: 1px solid #e6ded7; }}
+      .footer {{ position: fixed; bottom: 8mm; left: 0; right: 0; font-size: 8pt;
+                 color: #999; text-align: center; }}
+    </style></head><body>
+      <div class="brand">
+        <h1>{_html_escape(clinic.get('name') or 'ProClinic')}</h1>
+        <div class="sub">Ficha Clínica Premium · Emitida em {now_br}</div>
+      </div>
+      <div class="patient">
+        <b>Paciente:</b> {_html_escape(pname)} &nbsp;·&nbsp;
+        <b>CPF:</b> {_html_escape(pcpf)} &nbsp;·&nbsp;
+        <b>Nasc.:</b> {_html_escape(pbirth)} &nbsp;·&nbsp;
+        <b>Telefone:</b> {_html_escape(pphone)}
+      </div>
+      {''.join(sections)}
+      <div class="footer">Documento gerado por ProClinic — {_html_escape(clinic.get('name') or '')} · {now_br}</div>
+    </body></html>"""
+
+    buf = io.BytesIO()
+    pisa.CreatePDF(src=html, dest=buf, encoding="utf-8")
+    pdf_bytes = buf.getvalue()
+
+    # Save to storage for persistent URL
+    rel_path = f"{APP_NAME}/{clinic_id}/fichas/{patient_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.pdf"
+    stored = put_object(rel_path, pdf_bytes, "application/pdf")
+    file_id = f"file_{uuid.uuid4().hex[:12]}"
+    sig = make_file_signature(file_id, clinic_id)
+    await db.files.insert_one({
+        "file_id": file_id, "storage_path": stored["path"],
+        "original_filename": f"ficha-{pname}.pdf", "content_type": "application/pdf",
+        "size": stored.get("size", len(pdf_bytes)), "clinic_id": clinic_id,
+        "kind": "ficha_pdf", "patient_id": patient_id,
+        "is_deleted": False, "signature": sig,
+        "uploaded_by": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    url = f"/api/files/{stored['path']}?sig={sig}"
+    return {"file_id": file_id, "url": url, "size": len(pdf_bytes)}
+
+
+
+
 @api_router.post("/messages")
 async def send_message(data: MessageIn, user: dict = Depends(get_current_user)):
     """Enqueue a message. Provider integration plugged in later (Evolution API)."""

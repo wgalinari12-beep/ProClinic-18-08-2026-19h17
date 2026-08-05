@@ -174,8 +174,33 @@ Fundamento estrutural para o prontuário premium de clínica de estética avanç
 - ✅ **Backward compat**: modules antigos (`geral`, `facial`, `corporal`, `capilar`) continuam funcionando. Documentos com `module=geral` continuam visíveis. FichaForm renderiza dinamicamente pelo schema.
 - ✅ **Validação visual**: screenshot confirma ordem correta + "Anamnese" como default. Backend restart OK. Lint clean.
 
-### Fase Ficha Premium UI — Camada Visual (Fev/2026)
-Refatoração do `FichaForm` para suportar 5 tipos visuais premium. **Zero backend change**. Detalhes em `/app/memory/RELATORIO_FICHA_PREMIUM_UI.md`.
+### Fase Premium Clínica Completa — Ondas 1-5 (Fev/2026)
+Ver relatório completo em `/app/memory/RELATORIO_FASE_PREMIUM_CLINICA.md`.
+
+- ✅ **Onda 1 · Corporal Premium** — antropometria full (IMC/RCQ/Petroski/Siri):
+  - Nova lib `/app/frontend/src/lib/anthropometry.js` (fórmulas puras)
+  - Novo componente `ComputedCard` (read-only, borda cromática por risco)
+  - 41 campos adicionados: sexo/idade/14 perimetria/8 adipometria/diástase/relatório
+  - 11 computed cards (IMC+RCQ, Σ pregas, densidade, %gordura, massa magra/gorda/óssea/residual/muscular, assimetria)
+- ✅ **Onda 2 · Capilar Premium** — tricologia avançada:
+  - Andre Walker 12 tipos (1A-4C), Norwood-Hamilton (I-VII), Savin (1-7+A)
+  - Alopecia Areata (5 subtipos), Displasias congênitas/adquiridas
+  - Avaliação clínica (oleosidade/descamação/prurido/miniaturização/inflamação/densidade)
+  - Hábitos capilares com risco (progressiva/descoloração=alto)
+- ✅ **Onda 3 · Injetáveis Premium** — harmonização facial:
+  - Mapa facial interativo 3-views (Frontal + Perfil D + Perfil E) com 23+ pontos anatômicos
+  - Tabela dinâmica de aplicações (produto/marca-lote/região/UI/ml/obs) via `MedicationTable` genérica
+  - Somatórios automáticos por sessão (total UI, total ml, top produto, top região)
+  - Rastreabilidade lote/validade/fabricante
+- ✅ **Onda 4 · Epilação Premium** — Fitzpatrick, pigmento, densidade, métodos com risco
+- ✅ **Onda 5 · PDF Clínico Premium** — endpoint `GET /api/patients/{id}/ficha-pdf`:
+  - Gera PDF completo (todos os 6 módulos) com identidade visual da clínica (primary_color + logo)
+  - Estilo A4 premium, cabeçalho + dados do paciente + módulos + fotos + footer
+  - Armazenado em Object Storage com URL assinada JWT (padrão idêntico a receipts/invoices)
+  - Botão "Baixar Ficha Premium (PDF)" no `PatientClinicalTimeline`
+- ✅ **Retrocompatibilidade 100%**: valores stored preservados, campos antigos mantidos em paralelo, autosave/finalize/AI/prontuário/financeiro inalterados
+- ✅ **Backend regression**: 150/150 tests pass (6 suites) — zero regressões
+- ✅ **BodyMap estendido**: aceita `viewsConfig` custom para qualquer mapa anatômico futuro (facial, dental, mãos, etc)
 
 - ✅ **5 componentes 100% reutilizáveis** em `/app/frontend/src/components/ficha-fields/`:
   - `CardSelect` — cards com cor, ícone, imagem opcional, tooltip, score, classificação, nível de risco.

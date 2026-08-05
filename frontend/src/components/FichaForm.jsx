@@ -13,6 +13,7 @@ import ImageCardSelect from "@/components/ficha-fields/ImageCardSelect";
 import CheckboxGroupVisual from "@/components/ficha-fields/CheckboxGroupVisual";
 import MedicationTable from "@/components/ficha-fields/MedicationTable";
 import BodyMap from "@/components/ficha-fields/BodyMap";
+import ComputedCard from "@/components/ficha-fields/ComputedCard";
 
 const IMC_CLASS = (imc) => {
   if (imc < 18.5) return { label: "Abaixo do peso", color: "text-secondary" };
@@ -240,6 +241,7 @@ export default function FichaForm({ module, schema, patientId, onSaved, onAiSumm
                   value={answers[f.key] || []}
                   onChange={(v) => setField(f.key, v)}
                   views={f.views}
+                  viewsConfig={f.viewsConfig}
                   regionsFrontal={f.regionsFrontal}
                   regionsPosterior={f.regionsPosterior}
                   highlightColor={f.highlightColor}
@@ -250,6 +252,23 @@ export default function FichaForm({ module, schema, patientId, onSaved, onAiSumm
               {f.type === "date" && (
                 <Input type="date" data-testid={`ficha-${module}-${f.key}`} value={answers[f.key] || ""}
                   onChange={(e) => setField(f.key, e.target.value)} className="h-11 rounded-xl" />
+              )}
+              {f.type === "computed_grid" && (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5" data-testid={`ficha-${module}-${f.key}`}>
+                  {(f.compute ? f.compute(answers) : []).map((c, i) => (
+                    <ComputedCard
+                      key={c.key || i}
+                      label={c.label}
+                      value={c.value}
+                      unit={c.unit}
+                      subtitle={c.subtitle}
+                      classification={c.classification}
+                      risk={c.risk}
+                      tooltip={c.tooltip}
+                      testid={`ficha-${module}-${f.key}-${c.key || i}`}
+                    />
+                  ))}
+                </div>
               )}
               {f.help && <p className="text-[11px] text-muted-foreground/80">{f.help}</p>}
             </div>
