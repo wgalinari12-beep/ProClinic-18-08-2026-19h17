@@ -1770,6 +1770,10 @@ class AttendanceSessionIn(BaseModel):
     duration_seconds: Optional[int] = 0
 
 
+class ReopenIn(BaseModel):
+    reason: str
+
+
 @api_router.post("/attendance/start")
 async def start_attendance(
     payload: Dict[str, Any], user: dict = Depends(get_current_user)
@@ -1788,6 +1792,8 @@ async def start_attendance(
         {"appointment_id": appointment_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
     )
     if existing:
+        # ⭐ Fase 6: atendimento finalizado abre em modo somente-leitura
+        existing["read_only"] = existing.get("status") == "concluido"
         return existing
     now_iso = datetime.now(timezone.utc).isoformat()
     session = {
@@ -1837,6 +1843,17 @@ async def update_attendance(
     """Autosave attendance session draft. Identity fields (appointment_id, patient_id)
     cannot be mutated here — only session content."""
     forbid_recepcao_clinical(user)
+    # ⭐ Fase 6: bloqueia edição de atendimento finalizado (imutável)
+    _cur = await db.attendance_sessions.find_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0, "status": 1}
+    )
+    if not _cur:
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    if _cur.get("status") == "concluido":
+        raise HTTPException(
+            status_code=423,
+            detail="Atendimento finalizado. Reabra o atendimento (com justificativa) para editar.",
+        )
     update = data.model_dump(exclude_unset=True)
     # Identity fields are immutable post-creation
     update.pop("appointment_id", None)
@@ -2039,7 +2056,19 @@ async def finalize_attendance(
             "created_by_name": user["name"],
             "created_at": now_iso,
         }
-        await db.medical_records.insert_one(record)
+        _prev_rec = await db.medical_records.find_one(
+            {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+        )
+        if _prev_rec:
+            # ⭐ Fase 6: re-finalização após reabertura — preserva record_id e histórico de reaberturas
+            record["record_id"] = _prev_rec.get("record_id", record["record_id"])
+            if _prev_rec.get("reopen_history"):
+                record["reopen_history"] = _prev_rec["reopen_history"]
+            await db.medical_records.replace_one(
+                {"session_id": session_id, "clinic_id": user["clinic_id"]}, record
+            )
+        else:
+            await db.medical_records.insert_one(record)
         record.pop("_id", None)
 
         # mark session concluida
@@ -2068,7 +2097,11 @@ async def finalize_attendance(
 
         # ===== Automatic financial registration =====
         fin_created: List[str] = []
-        if payload and payload.payment_status:
+        # ⭐ Fase 6: evita duplicar lançamentos em re-finalização após reabertura
+        _existing_fin = await db.financial_entries.count_documents(
+            {"session_id": session_id, "clinic_id": user["clinic_id"]}
+        )
+        if payload and payload.payment_status and _existing_fin == 0:
             # determine total: budget total > payload.amount_total > appointment.price > 0
             total = None
             budget_doc = None
@@ -2238,6 +2271,72 @@ async def finalize_attendance(
             {"$set": {"finalizing": False}},
         )
         raise HTTPException(status_code=500, detail=f"Erro ao finalizar: {str(e)}")
+
+
+@api_router.post("/attendance/{session_id}/reopen")
+async def reopen_attendance(
+    session_id: str, payload: ReopenIn, request: Request, user: dict = Depends(get_current_user)
+):
+    """⭐ Fase 6 — Reabre um atendimento FINALIZADO.
+    Qualquer usuário clínico pode reabrir, PORÉM a justificativa é obrigatória e o
+    evento fica registrado permanentemente no prontuário (medical_record) e na sessão.
+    """
+    forbid_recepcao_clinical(user)
+    reason = (payload.reason or "").strip()
+    if len(reason) < 3:
+        raise HTTPException(status_code=400, detail="Justificativa de reabertura é obrigatória.")
+
+    sess = await db.attendance_sessions.find_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    if not sess:
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    if sess.get("status") != "concluido":
+        raise HTTPException(status_code=400, detail="Somente atendimentos finalizados podem ser reabertos.")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
+        request.client.host if request.client else "unknown"
+    )
+    event = {
+        "reopened_by": user["user_id"],
+        "reopened_by_name": user.get("name"),
+        "reopened_by_role": user.get("role"),
+        "reason": reason,
+        "reopened_at": now_iso,
+        "ip": ip,
+        "previous_finalized_at": sess.get("finalized_at"),
+        "session_number": sess.get("session_number"),
+    }
+
+    # Sessão volta a rascunho (editável) e mantém histórico; limpa cache de idempotência
+    await db.attendance_sessions.update_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]},
+        {
+            "$set": {"status": "rascunho", "finalizing": False, "reopened_at": now_iso},
+            "$unset": {"finalized_result": ""},
+            "$push": {"reopen_history": event},
+        },
+    )
+
+    # Registro PERMANENTE no prontuário (medical_record da sessão)
+    await db.medical_records.update_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]},
+        {"$push": {"reopen_history": event}},
+    )
+
+    # Agendamento volta para "em_atendimento"
+    if sess.get("appointment_id"):
+        await db.appointments.update_one(
+            {"appointment_id": sess["appointment_id"], "clinic_id": user["clinic_id"]},
+            {"$set": {"status": "em_atendimento", "reopened_at": now_iso}},
+        )
+
+    updated = await db.attendance_sessions.find_one(
+        {"session_id": session_id, "clinic_id": user["clinic_id"]}, {"_id": 0}
+    )
+    updated["read_only"] = False
+    return updated
 
 
 @api_router.get("/attendance/by-appointment/{appointment_id}")

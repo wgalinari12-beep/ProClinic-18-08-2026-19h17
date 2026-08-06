@@ -9,7 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
   Clock, AlertCircle, Sparkles, FileSignature, CheckCircle2,
-  ClipboardList, FileText, Pill, Loader2, Wallet,
+  ClipboardList, FileText, Pill, Loader2, Wallet, Lock, Unlock,
 } from "lucide-react";
 import { toast } from "sonner";
 import PhotoUploader from "@/components/PhotoUploader";
@@ -69,6 +69,11 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   const [linkedBudget, setLinkedBudget] = useState(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [docGenOpen, setDocGenOpen] = useState(false);
+  // ⭐ Fase 6: travamento de atendimento finalizado + reabertura com auditoria
+  const [locked, setLocked] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
+  const [reopenBusy, setReopenBusy] = useState(false);
   // ⭐ Fase 3: dados enriquecidos para header inteligente
   const [financeSummary, setFinanceSummary] = useState(null);
   const [lastAttendance, setLastAttendance] = useState(null);
@@ -92,6 +97,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
           appointment_id: appointment.appointment_id,
         });
         setSession(sess);
+        setLocked(!!sess.read_only);
         setSeconds(sess.duration_seconds || 0);
         // 3. load existing budget (if any) for this appointment
         try {
@@ -124,10 +130,10 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
 
   // Timer
   useEffect(() => {
-    if (stage !== "inProgress") return;
+    if (stage !== "inProgress" || locked) return;
     tickRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
     return () => clearInterval(tickRef.current);
-  }, [stage]);
+  }, [stage, locked]);
 
   // Autosave session (debounced) when session changes
   const abortRef = useRef(null);
@@ -137,6 +143,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   // - AbortController cancels in-flight request before firing a new one
   // - client_op_id guards against stale response overwriting fresher state
   const autosave = (patch) => {
+    if (locked) return; // ⭐ Fase 6: atendimento finalizado é imutável
     setSession((s) => ({ ...s, ...patch }));
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
@@ -170,6 +177,28 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   };
 
   const setSessionField = (k, v) => autosave({ [k]: v });
+
+  // ⭐ Fase 6: reabertura de atendimento finalizado (justificativa obrigatória)
+  const confirmReopen = async () => {
+    const reason = (reopenReason || "").trim();
+    if (reason.length < 3) {
+      toast.error("Informe a justificativa da reabertura.");
+      return;
+    }
+    setReopenBusy(true);
+    try {
+      const { data } = await api.post(`/attendance/${session.session_id}/reopen`, { reason });
+      setSession(data);
+      setLocked(false);
+      setReopenOpen(false);
+      setReopenReason("");
+      toast.success("Atendimento reaberto. A justificativa foi registrada no prontuário.");
+    } catch (e) {
+      toast.error(describeApiError(e, "Falha ao reabrir atendimento"));
+    } finally {
+      setReopenBusy(false);
+    }
+  };
 
   // Signature capture with forensic metadata (Correção 4+5)
   const captureSignature = async (type, base64) => {
@@ -612,6 +641,21 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
           {/* In progress */}
           {stage === "inProgress" && session && (
             <div className="p-6">
+              {locked && (
+                <div className="mb-4 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3 flex items-center justify-between gap-3 flex-wrap" data-testid="attendance-locked-banner">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Lock className="h-4 w-4 text-primary" />
+                    <span className="font-medium">Atendimento finalizado</span>
+                    <span className="text-muted-foreground text-xs">
+                      Somente leitura{session.finalized_at ? ` · ${new Date(session.finalized_at).toLocaleString("pt-BR")}` : ""}
+                    </span>
+                  </div>
+                  <Button type="button" size="sm" variant="outline" onClick={() => setReopenOpen(true)} className="rounded-lg h-8 text-xs" data-testid="reopen-attendance-btn">
+                    <Unlock className="h-3.5 w-3.5 mr-1" /> Reabrir atendimento
+                  </Button>
+                </div>
+              )}
+              <fieldset disabled={locked} className={`min-w-0 border-0 p-0 m-0 ${locked ? "opacity-80" : ""}`}>
               <Tabs value={tab} onValueChange={setTab}>
                 <TabsList className="bg-muted/50 rounded-xl">
                   <TabsTrigger value="ficha" data-testid="tab-ficha" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
@@ -773,6 +817,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                   </div>
                 </TabsContent>
               </Tabs>
+              </fieldset>
             </div>
           )}
 
@@ -783,9 +828,19 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
         {stage === "inProgress" && (
           <div className="border-t border-border px-6 py-3 flex items-center justify-between shrink-0 bg-card gap-3 flex-wrap" data-testid="attendance-footer">
             <Button variant="ghost" onClick={() => onOpenChange(false)} data-testid="attendance-close-draft-btn">
-              Salvar rascunho e sair
+              {locked ? "Fechar" : "Salvar rascunho e sair"}
             </Button>
-            {/* ⭐ Fase 3: Financial preview inline */}
+            {locked ? (
+              <div className="flex items-center gap-3 ml-auto">
+                <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  <Lock className="h-3.5 w-3.5" /> Atendimento imutável
+                </span>
+                <Button type="button" variant="outline" onClick={() => setReopenOpen(true)} className="rounded-xl" data-testid="reopen-attendance-footer-btn">
+                  <Unlock className="h-4 w-4 mr-1" /> Reabrir atendimento
+                </Button>
+              </div>
+            ) : (
+            /* ⭐ Fase 3: Financial preview inline */
             <div className="flex items-center gap-3 flex-wrap ml-auto">
               {financialPreviewTotal > 0 && (
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-muted/50 text-[11px]" data-testid="financial-preview">
@@ -807,8 +862,38 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <><CheckCircle2 className="h-4 w-4 mr-1" /> Concluir atendimento</>}
               </Button>
             </div>
+            )}
           </div>
         )}
+
+        {/* ⭐ Fase 6: Dialog de reabertura (justificativa obrigatória) */}
+        <Dialog open={reopenOpen} onOpenChange={(v) => { if (!reopenBusy) setReopenOpen(v); }}>
+          <DialogContent className="sm:max-w-md" data-testid="reopen-dialog">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2"><Unlock className="h-4 w-4 text-primary" /> Reabrir atendimento</DialogTitle>
+              <DialogDescription>
+                A justificativa é obrigatória e ficará registrada de forma permanente no prontuário do paciente (com data, hora, usuário e IP).
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">Justificativa da reabertura</Label>
+              <Textarea
+                value={reopenReason}
+                onChange={(e) => setReopenReason(e.target.value)}
+                placeholder="Descreva o motivo da reabertura deste atendimento..."
+                rows={4}
+                className="rounded-xl"
+                data-testid="reopen-reason-input"
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setReopenOpen(false)} disabled={reopenBusy} data-testid="reopen-cancel-btn">Cancelar</Button>
+              <Button onClick={confirmReopen} disabled={reopenBusy || reopenReason.trim().length < 3} className="rounded-xl bg-primary text-primary-foreground hover:bg-primary/90" data-testid="reopen-confirm-btn">
+                {reopenBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Reabrir com justificativa"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         <CompletePaymentDialog
           open={paymentOpen}

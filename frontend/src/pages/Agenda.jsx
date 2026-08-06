@@ -20,6 +20,7 @@ import {
   PointerSensor, useSensor, useSensors, DragOverlay,
 } from "@dnd-kit/core";
 import AttendanceDialog from "@/components/AttendanceDialog";
+import { getStatusMeta, STATUS_META, STATUS_ORDER } from "@/lib/statusColors";
 
 const HOURS = Array.from({ length: 12 }, (_, i) => 8 + i); // 8h..19h
 const SLOT_HEIGHT = 80; // px per hour
@@ -29,19 +30,11 @@ const PROCEDURES = [
   "Laser Facial", "Criolipólise", "Depilação a Laser",
 ];
 
-const STATUS_STYLES = {
-  confirmado: { bg: "bg-success/15", text: "text-success", border: "border-l-success" },
-  agendado: { bg: "bg-primary/10", text: "text-primary", border: "border-l-primary" },
-  concluido: { bg: "bg-muted", text: "text-muted-foreground", border: "border-l-muted-foreground" },
-  cancelado: { bg: "bg-destructive/10", text: "text-destructive", border: "border-l-destructive" },
-  encaixe: { bg: "bg-secondary/20", text: "text-secondary", border: "border-l-secondary" },
-};
-
 // ============================================================
 // Draggable appointment block
 // ============================================================
 function ApptBlock({ appointment, onClick, dragging }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: appointment.appointment_id,
     data: { appointment },
   });
@@ -52,25 +45,27 @@ function ApptBlock({ appointment, onClick, dragging }) {
   const top = (start.getMinutes() / 60) * SLOT_HEIGHT;
   const height = (duration / 60) * SLOT_HEIGHT - 4;
 
+  const meta = getStatusMeta(appointment.status);
   const proColor = appointment.professional_color || "#B76E79";
+
+  // ⭐ Fase 1: NÃO aplicamos transform na origem — o DragOverlay cuida do
+  // movimento, mantendo o cursor centralizado no card (estilo Google Calendar).
   const style = {
-    transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
     top: `${top}px`,
     height: `${height}px`,
-    opacity: isDragging ? 0.4 : 1,
-    zIndex: isDragging ? 50 : 1,
-    borderLeftColor: proColor,
-    boxShadow: `inset 3px 0 0 ${proColor}`,
+    opacity: isDragging ? 0.35 : 1,
+    zIndex: isDragging ? 5 : 1,
+    backgroundColor: meta.tint,
+    color: meta.text,
+    borderLeftColor: meta.color,
   };
-
-  const st = STATUS_STYLES[appointment.status] || STATUS_STYLES.agendado;
 
   return (
     <div
       ref={setNodeRef}
       style={style}
       data-testid={`apt-block-${appointment.appointment_id}`}
-      className={`absolute left-1 right-1 rounded-lg border-l-[3px] px-2 py-1 text-[11px] cursor-grab active:cursor-grabbing select-none overflow-hidden ${st.bg} ${st.text}`}
+      className="absolute left-1 right-1 rounded-lg border-l-[4px] px-2 py-1 text-[11px] cursor-grab active:cursor-grabbing select-none overflow-hidden shadow-sm"
       onClick={(e) => {
         // Prevent click during drag; ignore if was dragging
         if (!isDragging && !dragging) {
@@ -81,8 +76,11 @@ function ApptBlock({ appointment, onClick, dragging }) {
       {...listeners}
       {...attributes}
     >
-      <div className="font-medium truncate pointer-events-none">{appointment.patient_name}</div>
-      <div className="opacity-75 truncate text-[10px] pointer-events-none">
+      <div className="flex items-center gap-1 pointer-events-none">
+        <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: proColor }} title="Profissional" />
+        <span className="font-semibold truncate">{appointment.patient_name}</span>
+      </div>
+      <div className="opacity-80 truncate text-[10px] pointer-events-none">
         {format(start, "HH:mm")} · {appointment.procedure}
       </div>
     </div>
@@ -158,6 +156,7 @@ export default function Agenda() {
   // dnd-kit
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const [activeDrag, setActiveDrag] = useState(null);
+  const [activeSize, setActiveSize] = useState(null); // ⭐ Fase 1: dimensões do card p/ overlay
   const dragging = !!activeDrag;
 
   const days = useMemo(
@@ -210,10 +209,14 @@ export default function Agenda() {
   // === DnD handlers ===
   const onDragStart = (event) => {
     setActiveDrag(event.active.data.current?.appointment || null);
+    // ⭐ Fase 1: captura o tamanho real do card para o overlay ficar idêntico
+    const r = event.active.rect.current?.initial;
+    if (r) setActiveSize({ width: r.width, height: r.height });
   };
   const onDragEnd = async (event) => {
     const { active, over } = event;
     setActiveDrag(null);
+    setActiveSize(null);
     if (!over) return;
     const apt = active.data.current?.appointment;
     if (!apt) return;
@@ -560,26 +563,36 @@ export default function Agenda() {
           </div>
           )}
 
-          <DragOverlay>
+          <DragOverlay dropAnimation={null} zIndex={100}>
             {activeDrag ? (
               <div
-                className="rounded-lg bg-card border-l-[3px] px-2 py-1 text-[11px] shadow-xl"
-                style={{ borderLeftColor: activeDrag.professional_color || "#B76E79", boxShadow: `inset 3px 0 0 ${activeDrag.professional_color || "#B76E79"}` }}
+                className="rounded-lg border-l-[4px] px-2 py-1 text-[11px] shadow-2xl overflow-hidden cursor-grabbing"
+                style={{
+                  width: activeSize?.width,
+                  height: activeSize?.height,
+                  backgroundColor: getStatusMeta(activeDrag.status).tint,
+                  color: getStatusMeta(activeDrag.status).text,
+                  borderLeftColor: getStatusMeta(activeDrag.status).color,
+                }}
               >
-                <div className="font-medium">{activeDrag.patient_name}</div>
-                <div className="opacity-75 text-[10px]">{activeDrag.procedure}</div>
+                <div className="flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full shrink-0" style={{ backgroundColor: activeDrag.professional_color || "#B76E79" }} />
+                  <span className="font-semibold truncate">{activeDrag.patient_name}</span>
+                </div>
+                <div className="opacity-80 truncate text-[10px]">{activeDrag.procedure}</div>
               </div>
             ) : null}
           </DragOverlay>
         </DndContext>
 
-        {/* Legend */}
-        <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-success" /> Confirmado</span>
-          <span className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-primary" /> Agendado</span>
-          <span className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-secondary" /> Encaixe</span>
-          <span className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-muted-foreground" /> Concluído</span>
-          <span className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-destructive" /> Cancelado</span>
+        {/* Legend — ⭐ Fase 2: sistema único de cores */}
+        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground" data-testid="status-legend">
+          {STATUS_ORDER.map((key) => (
+            <span key={key} className="flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: STATUS_META[key].color }} />
+              {STATUS_META[key].label}
+            </span>
+          ))}
           <span className="ml-auto italic">Arraste para mover · Clique no card para detalhes · Clique em célula vazia para criar</span>
         </div>
 
@@ -745,8 +758,14 @@ export default function Agenda() {
                 </div>
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">Status</span>
-                  <Badge className={`${STATUS_STYLES[selected.status]?.bg} ${STATUS_STYLES[selected.status]?.text} border-0`}>
-                    {selected.status}
+                  <Badge
+                    className="border-0 font-medium"
+                    style={{
+                      backgroundColor: getStatusMeta(selected.status).tint,
+                      color: getStatusMeta(selected.status).text,
+                    }}
+                  >
+                    {getStatusMeta(selected.status).label}
                   </Badge>
                 </div>
               </div>
