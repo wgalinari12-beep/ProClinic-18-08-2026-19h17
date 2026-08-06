@@ -871,36 +871,115 @@ async def delete_entry(entry_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+def _build_period_buckets(start_s: str, end_s: str):
+    """⭐ Fase 9/10: define granularidade adaptativa do gráfico conforme o período.
+    <=31 dias => diário · <=731 dias (2 anos) => mensal · acima => anual."""
+    start = datetime.strptime(start_s, "%Y-%m-%d").date()
+    end = datetime.strptime(end_s, "%Y-%m-%d").date()
+    if end < start:
+        start, end = end, start
+    days = (end - start).days + 1
+    if days <= 31:
+        mode = "day"
+    elif days <= 731:
+        mode = "month"
+    else:
+        mode = "year"
+    keys: List[str] = []
+    if mode == "day":
+        d = start
+        while d <= end:
+            keys.append(d.strftime("%Y-%m-%d"))
+            d += timedelta(days=1)
+    elif mode == "month":
+        y, m = start.year, start.month
+        while (y < end.year) or (y == end.year and m <= end.month):
+            keys.append(f"{y:04d}-{m:02d}")
+            m += 1
+            if m == 13:
+                m = 1
+                y += 1
+    else:
+        for y in range(start.year, end.year + 1):
+            keys.append(f"{y:04d}")
+    return mode, keys
+
+
+def _period_bucket_key(due_date: Optional[str], mode: str) -> Optional[str]:
+    if not due_date:
+        return None
+    if mode == "day":
+        return due_date[:10]
+    if mode == "month":
+        return due_date[:7]
+    return due_date[:4]
+
+
+def _period_label(key: str, mode: str) -> str:
+    if mode == "day":
+        return f"{key[8:10]}/{key[5:7]}"  # dd/MM
+    return key  # YYYY-MM ou YYYY
+
+
+def _period_revenue_chart(docs: List[Dict[str, Any]], start_s: str, end_s: str):
+    mode, keys = _build_period_buckets(start_s, end_s)
+    rev_map = {k: 0 for k in keys}
+    exp_map = {k: 0 for k in keys}
+    for d in docs:
+        bk = _period_bucket_key(d.get("due_date"), mode)
+        if bk in rev_map:
+            if d.get("type") == "receita":
+                rev_map[bk] += d.get("amount") or 0
+            elif d.get("type") == "despesa":
+                exp_map[bk] += d.get("amount") or 0
+    return [{"mes": _period_label(k, mode), "receita": rev_map[k], "despesa": exp_map[k]} for k in keys]
+
+
 @api_router.get("/finance/summary")
-async def finance_summary(user: dict = Depends(get_current_user)):
+async def finance_summary(
+    user: dict = Depends(get_current_user),
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
     require_finance_read(user)
+    # ⭐ Fase 9: filtro de período opcional (start/end em YYYY-MM-DD).
+    # Sem período => comportamento legado (todos os lançamentos + últimos 6 meses).
+    q: Dict[str, Any] = {"clinic_id": user["clinic_id"]}
+    if start and end:
+        q["due_date"] = {"$gte": start, "$lte": end}
     docs = await db.financial_entries.find(
-        {"clinic_id": user["clinic_id"]}, {"_id": 0}
-    ).to_list(5000)
+        q, {"_id": 0, "amount": 1, "type": 1, "paid": 1, "due_date": 1}
+    ).to_list(100000)
     receitas = sum(d["amount"] for d in docs if d["type"] == "receita" and d.get("paid"))
     despesas = sum(d["amount"] for d in docs if d["type"] == "despesa" and d.get("paid"))
     a_receber = sum(d["amount"] for d in docs if d["type"] == "receita" and not d.get("paid"))
     a_pagar = sum(d["amount"] for d in docs if d["type"] == "despesa" and not d.get("paid"))
-    # last 6 months chart (calendar-month arithmetic, no duplicates near boundaries)
-    today = datetime.now(timezone.utc)
-    months = []
-    y, mo = today.year, today.month
-    buckets = []
-    for _ in range(6):
-        buckets.append(f"{y:04d}-{mo:02d}")
-        mo -= 1
-        if mo == 0:
-            mo = 12
-            y -= 1
-    months = list(reversed(buckets))
-    chart = []
-    for m in months:
-        rev = sum(d["amount"] for d in docs if d["type"] == "receita" and d["due_date"].startswith(m))
-        exp = sum(d["amount"] for d in docs if d["type"] == "despesa" and d["due_date"].startswith(m))
-        chart.append({"mes": m, "receita": rev, "despesa": exp})
+
+    if start and end:
+        # ⭐ Fase 9/10: gráfico adaptativo (dia/mês/ano) dentro do período
+        chart = _period_revenue_chart(docs, start, end)
+    else:
+        # Legado: últimos 6 meses (calendar-month arithmetic)
+        today = datetime.now(timezone.utc)
+        y, mo = today.year, today.month
+        buckets = []
+        for _ in range(6):
+            buckets.append(f"{y:04d}-{mo:02d}")
+            mo -= 1
+            if mo == 0:
+                mo = 12
+                y -= 1
+        months = list(reversed(buckets))
+        chart = []
+        for m in months:
+            rev = sum(d["amount"] for d in docs if d["type"] == "receita" and (d.get("due_date") or "").startswith(m))
+            exp = sum(d["amount"] for d in docs if d["type"] == "despesa" and (d.get("due_date") or "").startswith(m))
+            chart.append({"mes": m, "receita": rev, "despesa": exp})
+
     return {
         "receitas": receitas, "despesas": despesas, "saldo": receitas - despesas,
         "a_receber": a_receber, "a_pagar": a_pagar, "chart": chart,
+        "period": {"start": start, "end": end} if (start and end) else None,
     }
 
 
@@ -1194,32 +1273,64 @@ async def whatsapp_receipt_link(entry_id: str, user: dict = Depends(get_current_
 # Dashboard
 # ============================================================
 @api_router.get("/dashboard/stats")
-async def dashboard_stats(user: dict = Depends(get_current_user)):
+async def dashboard_stats(
+    user: dict = Depends(get_current_user),
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+):
     clinic_id = user["clinic_id"]
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
-    month_prefix = datetime.now(timezone.utc).strftime("%Y-%m")
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    month_prefix = now.strftime("%Y-%m")
+
+    # ⭐ Fase 8: período efetivo (default = mês atual quando não informado)
+    eff_start = start or f"{month_prefix}-01"
+    eff_end = end or now.strftime("%Y-%m-%d")
+    # limite exclusivo para campos ISO (start/created_at)
+    try:
+        end_excl = (datetime.strptime(eff_end, "%Y-%m-%d").date() + timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        end_excl = tomorrow
 
     total_patients = await db.patients.count_documents({"clinic_id": clinic_id})
     new_this_month = await db.patients.count_documents({
         "clinic_id": clinic_id,
         "created_at": {"$regex": f"^{month_prefix}"},
     })
+    # ⭐ Fase 8: novos pacientes no período
+    new_patients_period = await db.patients.count_documents({
+        "clinic_id": clinic_id,
+        "created_at": {"$gte": eff_start, "$lt": end_excl},
+    })
+
     today_apts = await db.appointments.find(
         {"clinic_id": clinic_id, "start": {"$gte": today, "$lt": tomorrow}},
         {"_id": 0},
     ).sort("start", 1).to_list(100)
     confirmed_today = sum(1 for a in today_apts if a["status"] == "confirmado")
 
-    # revenue this month (paid receitas)
+    # ⭐ Fase 8: atendimentos no período
+    appointments_period = await db.appointments.count_documents({
+        "clinic_id": clinic_id, "start": {"$gte": eff_start, "$lt": end_excl},
+    })
+
+    # revenue this month (paid receitas) — mantido p/ compat
     fin = await db.financial_entries.find(
         {"clinic_id": clinic_id, "type": "receita", "paid": True,
          "due_date": {"$regex": f"^{month_prefix}"}}, {"_id": 0, "amount": 1}
     ).to_list(2000)
     revenue_month = sum(f["amount"] for f in fin)
 
+    # ⭐ Fase 8: faturamento no período (receitas pagas)
+    fin_period = await db.financial_entries.find(
+        {"clinic_id": clinic_id, "type": "receita", "paid": True,
+         "due_date": {"$gte": eff_start, "$lte": eff_end}}, {"_id": 0, "amount": 1}
+    ).to_list(100000)
+    revenue_period = sum(f["amount"] for f in fin_period)
+
     # aniversariantes (mês atual)
-    month_num = datetime.now(timezone.utc).strftime("-%m-")
+    month_num = now.strftime("-%m-")
     bdays = await db.patients.find(
         {"clinic_id": clinic_id, "birth_date": {"$regex": month_num}},
         {"_id": 0, "name": 1, "birth_date": 1, "photo_url": 1, "patient_id": 1},
@@ -1228,9 +1339,9 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     # ocupação agenda hoje
     occupancy_pct = min(100, int((len(today_apts) / 12) * 100))  # assume 12 slots/day
 
-    # top procedimentos
+    # top procedimentos (⭐ Fase 8: respeita o período)
     pipeline = [
-        {"$match": {"clinic_id": clinic_id, "start": {"$regex": f"^{month_prefix}"}}},
+        {"$match": {"clinic_id": clinic_id, "start": {"$gte": eff_start, "$lt": end_excl}}},
         {"$group": {"_id": "$procedure", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
         {"$limit": 5},
@@ -1241,13 +1352,17 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     return {
         "total_patients": total_patients,
         "new_this_month": new_this_month,
+        "new_patients_period": new_patients_period,
         "appointments_today": len(today_apts),
+        "appointments_period": appointments_period,
         "confirmed_today": confirmed_today,
         "revenue_month": revenue_month,
+        "revenue_period": revenue_period,
         "today_agenda": today_apts,
         "birthdays": bdays,
         "occupancy_pct": occupancy_pct,
         "top_procedures": top_procedures,
+        "period": {"start": eff_start, "end": eff_end},
     }
 
 
@@ -5146,6 +5261,11 @@ async def on_startup():
         await db.financial_entries.create_index([("clinic_id", 1), ("session_id", 1)], sparse=True)
         await db.ai_generations.create_index([("clinic_id", 1), ("patient_id", 1), ("created_at", -1)], sparse=True)
         await db.ai_generations.create_index([("clinic_id", 1), ("session_id", 1)], sparse=True)
+        # ⭐ Fase 10: índices p/ filtros de período (dashboard + relatórios)
+        await db.appointments.create_index([("clinic_id", 1), ("start", 1)])
+        await db.appointments.create_index([("clinic_id", 1), ("patient_id", 1)])
+        await db.patients.create_index([("clinic_id", 1), ("created_at", 1)])
+        await db.patients.create_index([("clinic_id", 1), ("birth_date", 1)])
     except Exception:
         pass
     # ensure trial for the demo clinic (idempotent)

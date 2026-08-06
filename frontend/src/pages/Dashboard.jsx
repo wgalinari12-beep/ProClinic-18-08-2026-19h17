@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import PeriodFilter from "@/components/PeriodFilter";
 import { Badge } from "@/components/ui/badge";
 import {
   Users, Calendar as CalendarIcon, TrendingUp, Cake, Activity,
@@ -45,14 +46,17 @@ function StatCard({ icon: Icon, label, value, trend, color = "primary", testid }
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
   const [finance, setFinance] = useState(null);
+  const [period, setPeriod] = useState(null); // {start, end, label}
   const navigate = useNavigate();
 
   useEffect(() => {
+    if (!period) return;
     (async () => {
       try {
+        const params = { start: period.start, end: period.end };
         const [s, f] = await Promise.all([
-          api.get("/dashboard/stats"),
-          api.get("/finance/summary"),
+          api.get("/dashboard/stats", { params }),
+          api.get("/finance/summary", { params }),
         ]);
         setStats(s.data);
         setFinance(f.data);
@@ -60,9 +64,10 @@ export default function Dashboard() {
         console.error(e);
       }
     })();
-  }, []);
+  }, [period]);
 
   const brl = (n) => (n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  const periodLabel = (period?.label || "período").toLowerCase();
 
   return (
     <div data-testid="dashboard-page">
@@ -73,14 +78,24 @@ export default function Dashboard() {
       />
 
       <div className="p-6 sm:p-8 space-y-8 animate-fade-up">
+        {/* ⭐ Fase 8: filtro de período */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Período de análise</div>
+          <PeriodFilter
+            presets={["today", "yesterday", "7d", "15d", "30d", "90d", "6m", "1y"]}
+            defaultKey="6m"
+            onChange={setPeriod}
+          />
+        </div>
+
         {/* KPIs */}
         <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-          <StatCard testid="kpi-revenue" icon={TrendingUp} label="Faturamento (mês)"
-            value={brl(stats?.revenue_month)} trend="+12%" />
+          <StatCard testid="kpi-revenue" icon={TrendingUp} label={`Faturamento (${periodLabel})`}
+            value={brl(stats?.revenue_period ?? stats?.revenue_month)} trend={`+${stats?.appointments_period ?? 0} atend.`} />
           <StatCard testid="kpi-appointments" icon={CalendarIcon} label="Atendimentos hoje"
             value={stats?.appointments_today ?? 0} />
           <StatCard testid="kpi-patients" icon={Users} label="Pacientes ativos"
-            value={stats?.total_patients ?? 0} trend={`+${stats?.new_this_month ?? 0} este mês`} />
+            value={stats?.total_patients ?? 0} trend={`+${stats?.new_patients_period ?? 0} no período`} />
           <StatCard testid="kpi-occupancy" icon={Activity} label="Ocupação agenda"
             value={`${stats?.occupancy_pct ?? 0}%`} />
         </section>
@@ -92,7 +107,7 @@ export default function Dashboard() {
             <div className="flex items-end justify-between mb-6">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Receita x Despesa</div>
-                <h3 className="font-display text-xl font-semibold tracking-tight mt-1">Fluxo dos últimos 6 meses</h3>
+                <h3 className="font-display text-xl font-semibold tracking-tight mt-1">Fluxo · {period?.label || "período"}</h3>
               </div>
               <Badge variant="outline" className="text-[11px] font-normal">
                 Saldo {brl(finance?.saldo)}

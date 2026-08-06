@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import api from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
+import PeriodFilter from "@/components/PeriodFilter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,13 +22,23 @@ export default function Financeiro() {
     type: "receita", category: "Procedimentos", description: "", amount: 0,
     due_date: format(new Date(), "yyyy-MM-dd"), paid: false, payment_method: "pix",
   });
+  const [period, setPeriod] = useState(null); // {start, end, label}
 
   const load = async () => {
-    const [e, s] = await Promise.all([api.get("/finance/entries"), api.get("/finance/summary")]);
+    const params = period ? { start: period.start, end: period.end } : {};
+    const [e, s] = await Promise.all([
+      api.get("/finance/entries"),
+      api.get("/finance/summary", { params }),
+    ]);
     setEntries(e.data);
     setSummary(s.data);
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { if (period) load(); }, [period]);
+
+  // ⭐ Fase 9: lançamentos respeitam o período selecionado
+  const visibleEntries = period
+    ? entries.filter((e) => (e.due_date || "") >= period.start && (e.due_date || "") <= period.end)
+    : entries;
 
   const brl = (n) => (n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -117,6 +128,16 @@ export default function Financeiro() {
       />
 
       <div className="p-6 sm:p-8 space-y-6 animate-fade-up">
+        {/* ⭐ Fase 9: filtro de período */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Período</div>
+          <PeriodFilter
+            presets={["today", "7d", "30d", "90d", "180d", "1y", "2y", "5y", "10y"]}
+            defaultKey="180d"
+            onChange={setPeriod}
+          />
+        </div>
+
         {/* Summary cards */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[
@@ -139,7 +160,7 @@ export default function Financeiro() {
 
         {/* Chart */}
         <section className="rounded-2xl border border-border bg-card p-6" data-testid="finance-chart">
-          <h3 className="font-display text-xl font-semibold tracking-tight mb-5">Receitas x Despesas — 6 meses</h3>
+          <h3 className="font-display text-xl font-semibold tracking-tight mb-5">Receitas x Despesas — {period?.label || "período"}</h3>
           <div style={{ width: "100%", height: 280, minHeight: 280 }}>
             <ResponsiveContainer minWidth={280}>
               <BarChart data={summary?.chart || []}>
@@ -161,8 +182,8 @@ export default function Financeiro() {
             <h3 className="font-display text-lg font-semibold tracking-tight">Lançamentos</h3>
           </div>
           <div className="divide-y divide-border">
-            {entries.length === 0 && <p className="p-8 text-center text-sm text-muted-foreground">Nenhum lançamento.</p>}
-            {entries.map((e) => (
+            {visibleEntries.length === 0 && <p className="p-8 text-center text-sm text-muted-foreground">Nenhum lançamento.</p>}
+            {visibleEntries.map((e) => (
               <div key={e.entry_id} data-testid={`entry-${e.entry_id}`} className="flex items-center gap-4 px-6 py-4">
                 <div className={`h-2 w-2 rounded-full ${e.type === "receita" ? "bg-success" : "bg-destructive"}`} />
                 <div className="flex-1 min-w-0">
