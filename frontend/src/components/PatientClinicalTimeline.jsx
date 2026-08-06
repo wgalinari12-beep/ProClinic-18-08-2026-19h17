@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { getStatusMeta } from "@/lib/statusColors";
 
 const brl = (n) => (Number(n) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const fmtDate = (iso) => (iso ? format(parseISO(iso), "dd/MM/yyyy HH:mm", { locale: ptBR }) : "—");
@@ -19,7 +20,7 @@ const fmtDur = (s) => {
   return `${min}min ${sec}s`;
 };
 
-export default function PatientClinicalTimeline({ patientId }) {
+export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
   const [data, setData] = useState(null);
   const [expanded, setExpanded] = useState(new Set());
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -34,6 +35,17 @@ export default function PatientClinicalTimeline({ patientId }) {
   }, [patientId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // ⭐ Fase 7: quando aberto a partir de outra aba, expande e rola até a sessão
+  useEffect(() => {
+    if (!focusSessionId || !data) return;
+    setExpanded((prev) => new Set(prev).add(focusSessionId));
+    const t = setTimeout(() => {
+      const el = document.querySelector(`[data-testid="session-${focusSessionId}"]`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 200);
+    return () => clearTimeout(t);
+  }, [focusSessionId, data]);
 
   const downloadFichaPDF = async () => {
     setPdfBusy(true);
@@ -100,10 +112,11 @@ export default function PatientClinicalTimeline({ patientId }) {
         <ol className="relative border-l-2 border-border pl-6 space-y-4" data-testid="timeline-list">
           {sessions.map((s) => {
             const isOpen = expanded.has(s.session_id);
-            const isConcluida = s.status === "concluido";
+            const meta = getStatusMeta(s.status); // ⭐ Fase 2/7: cor única de status
+            const reopens = s.medical_record?.reopen_history || [];
             return (
               <li key={s.session_id} className="relative" data-testid={`session-${s.session_id}`}>
-                <span className={`absolute -left-[33px] top-2 h-3 w-3 rounded-full ring-4 ring-background ${isConcluida ? "bg-success" : "bg-yellow-500"}`} />
+                <span className="absolute -left-[33px] top-2 h-3 w-3 rounded-full ring-4 ring-background" style={{ backgroundColor: meta.color }} />
                 <div className="rounded-2xl border border-border bg-card">
                   {/* Session header (clickable) */}
                   <button
@@ -116,10 +129,13 @@ export default function PatientClinicalTimeline({ patientId }) {
                         <div className="flex items-center gap-2 flex-wrap">
                           {s.session_number && <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-primary/10 text-primary">{s.session_number}</span>}
                           <span className="font-medium text-sm">{s.procedure || "Atendimento"}</span>
-                          {isConcluida ? (
-                            <Badge className="bg-success/15 text-success border-success/30 text-[10px]">Concluído</Badge>
-                          ) : (
-                            <Badge variant="outline" className="text-[10px]">Em andamento</Badge>
+                          <Badge className="border-0 text-[10px] font-medium" style={{ backgroundColor: meta.tint, color: meta.text }}>
+                            {meta.label}
+                          </Badge>
+                          {reopens.length > 0 && (
+                            <Badge variant="outline" className="text-[10px] border-amber-400/50 text-amber-600">
+                              Reaberto {reopens.length}×
+                            </Badge>
                           )}
                         </div>
                         <div className="text-[11px] text-muted-foreground mt-0.5">
@@ -156,6 +172,26 @@ export default function PatientClinicalTimeline({ patientId }) {
                           {s.medical_record.prescriptions && (
                             <Field label="Prescrição"><pre className="whitespace-pre-wrap text-[13px] font-sans">{s.medical_record.prescriptions}</pre></Field>
                           )}
+                        </Section>
+                      )}
+
+                      {/* ⭐ Fase 6/7: histórico de reaberturas (auditoria permanente) */}
+                      {reopens.length > 0 && (
+                        <Section title="Reaberturas do atendimento (auditoria)">
+                          <div className="space-y-2">
+                            {reopens.map((rh, idx) => (
+                              <div key={idx} className="rounded-lg border border-amber-400/40 bg-amber-500/5 p-3 text-[12px]" data-testid={`reopen-audit-${idx}`}>
+                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                  <span className="font-medium text-amber-700">
+                                    {rh.reopened_by_name || "Usuário"} {rh.reopened_by_role ? `(${rh.reopened_by_role})` : ""}
+                                  </span>
+                                  <span className="text-muted-foreground">{fmtDate(rh.reopened_at)}</span>
+                                </div>
+                                <div className="mt-1"><span className="text-muted-foreground">Justificativa: </span>{rh.reason}</div>
+                                {rh.ip && <div className="text-[10px] text-muted-foreground mt-0.5">IP: {rh.ip}</div>}
+                              </div>
+                            ))}
+                          </div>
                         </Section>
                       )}
 

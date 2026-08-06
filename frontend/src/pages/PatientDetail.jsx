@@ -16,6 +16,7 @@ import BudgetEditor from "@/components/BudgetEditor";
 import DocumentGenerator from "@/components/DocumentGenerator";
 import PatientFinanceTab from "@/components/PatientFinanceTab";
 import PatientClinicalTimeline from "@/components/PatientClinicalTimeline";
+import PatientAnamneseTab from "@/components/PatientAnamneseTab";
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function PatientDetail() {
@@ -31,6 +32,14 @@ export default function PatientDetail() {
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetId, setBudgetId] = useState(null);
   const [docGenOpen, setDocGenOpen] = useState(false);
+  // ⭐ Fase 4/7: navegação entre abas + foco na sessão da timeline
+  const [activeTab, setActiveTab] = useState("timeline");
+  const [focusSession, setFocusSession] = useState(null);
+
+  const openOriginalSession = (sid) => {
+    setFocusSession(sid);
+    setActiveTab("clinica");
+  };
 
   const canClinical = user?.role !== "recepcao";
 
@@ -152,7 +161,7 @@ export default function PatientDetail() {
 
         {/* Tabs */}
         <div className="lg:col-span-2 rounded-2xl border border-border bg-card p-6">
-          <Tabs defaultValue="timeline" data-testid="patient-tabs">
+          <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="patient-tabs">
             <TabsList className="bg-muted/50 rounded-xl">
               <TabsTrigger value="timeline" data-testid="tab-timeline" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                 <CalendarDays className="h-4 w-4 mr-1.5" />Timeline
@@ -236,34 +245,12 @@ export default function PatientDetail() {
             </TabsContent>
 
             <TabsContent value="clinica" className="mt-5" data-testid="clinica-tab-content">
-              {!canClinical ? null : <PatientClinicalTimeline patientId={id} />}
+              {!canClinical ? null : <PatientClinicalTimeline patientId={id} focusSessionId={focusSession} />}
             </TabsContent>
 
             <TabsContent value="anamnese" className="mt-5">
-              {!canClinical ? null : anamnesis.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-8 text-center">Sem anamnese.</p>
-              ) : (
-                <div className="space-y-3">
-                  {anamnesis.map((a) => (
-                    <div key={a.anamnesis_id} className="border border-border rounded-xl p-4">
-                      <div className="flex items-center justify-between">
-                        <div className="font-medium">{a.template_name}</div>
-                        {a.signed && <Badge className="bg-success/15 text-success border-success/30">Assinada</Badge>}
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-1">
-                        {format(parseISO(a.created_at), "dd/MM/yyyy", { locale: ptBR })}
-                      </div>
-                      <div className="mt-3 text-sm space-y-1">
-                        {Object.entries(a.answers || {}).slice(0, 4).map(([k, v]) => (
-                          <div key={k} className="flex gap-2">
-                            <span className="text-muted-foreground">{k}:</span>
-                            <span>{String(v)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+              {!canClinical ? null : (
+                <PatientAnamneseTab patientId={id} onOpenSession={openOriginalSession} legacyAnamnesis={anamnesis} />
               )}
             </TabsContent>
 
