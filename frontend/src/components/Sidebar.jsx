@@ -14,8 +14,8 @@ const NAV = [
   { to: "/dashboard", icon: LayoutDashboard, label: "Painel" },
   { to: "/pacientes", icon: Users, label: "Pacientes" },
   { to: "/agenda", icon: Calendar, label: "Agenda" },
-  { to: "/prontuario", icon: FileText, label: "Prontuário", hideRoles: ["recepcao"] },
-  { to: "/anamnese", icon: ClipboardList, label: "Anamnese", hideRoles: ["recepcao"] },
+  { to: "/prontuario", icon: FileText, label: "Prontuário", hideRoles: ["recepcao"], hidden: true },
+  { to: "/anamnese", icon: ClipboardList, label: "Anamnese", hideRoles: ["recepcao"], hidden: true },
   { to: "/documentos", icon: FileSignature, label: "Documentos", hideRoles: ["recepcao"] },
   { to: "/procedimentos", icon: Briefcase, label: "Procedimentos", adminOnly: true },
   { to: "/financeiro", icon: Wallet, label: "Financeiro", roles: ["admin", "financeiro", "recepcao"] },
@@ -57,6 +57,8 @@ export default function Sidebar({ collapsed, onToggle }) {
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
         {NAV.filter((item) => {
           if (!user) return true;
+          // ⭐ Lote 4 / Fase A (A6): itens legados ocultos do menu (rotas mantidas).
+          if (item.hidden) return false;
           // super_admin sees only super-admin item
           if (user.role === "super_admin") return item.roles?.includes("super_admin");
           if (item.roles?.includes("super_admin")) return false;

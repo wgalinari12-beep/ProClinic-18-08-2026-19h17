@@ -7,9 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Search, User as UserIcon, Phone, Mail, AlertTriangle } from "lucide-react";
+import { Plus, Search, User as UserIcon, Phone, Mail, AlertTriangle, Download } from "lucide-react";
 import { toast } from "sonner";
-import { formatApiErrorDetail } from "@/lib/api";
+import { formatApiErrorDetail, downloadFile } from "@/lib/api";
 
 const EMPTY = {
   name: "", cpf: "", birth_date: "", phone: "", whatsapp: "", email: "",
@@ -54,12 +54,29 @@ export default function Patients() {
 
   const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
+  const [exporting, setExporting] = useState(false);
+  const onExportCsv = async () => {
+    setExporting(true);
+    try {
+      await downloadFile("/export/patients.csv", "pacientes.csv", search ? { search } : {});
+      toast.success("CSV exportado");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Falha ao exportar CSV");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div data-testid="patients-page">
       <PageHeader
         title="Pacientes"
         subtitle={`${patients.length} registrados`}
         actions={
+          <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="rounded-xl h-10" onClick={onExportCsv} disabled={exporting} data-testid="export-patients-csv">
+            <Download className="h-4 w-4 mr-1.5" /> {exporting ? "Exportando..." : "Exportar CSV"}
+          </Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button data-testid="new-patient-btn" className="rounded-xl h-10 bg-primary text-primary-foreground hover:bg-primary/90">
@@ -70,7 +87,7 @@ export default function Patients() {
               <DialogHeader>
                 <DialogTitle className="font-display text-2xl tracking-tight">Novo paciente</DialogTitle>
               </DialogHeader>
-              <form onSubmit={onCreate} className="grid grid-cols-2 gap-4" data-testid="new-patient-form">
+              <form onSubmit={onCreate} className="grid grid-cols-1 sm:grid-cols-2 gap-4" data-testid="new-patient-form">
                 <div className="col-span-2 space-y-1.5">
                   <Label className="text-xs uppercase tracking-wider text-muted-foreground">Nome completo *</Label>
                   <Input data-testid="form-name" required value={form.name} onChange={(e) => setField("name", e.target.value)} className="h-11 rounded-xl" />
@@ -123,6 +140,7 @@ export default function Patients() {
               </form>
             </DialogContent>
           </Dialog>
+          </div>
         }
       />
 

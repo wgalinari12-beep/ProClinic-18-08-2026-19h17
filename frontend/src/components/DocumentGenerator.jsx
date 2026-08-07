@@ -179,7 +179,7 @@ export default function DocumentGenerator({
             </div>
 
             <Tabs defaultValue="patient" className="w-full">
-              <TabsList className="bg-muted/40 rounded-xl">
+              <TabsList className="bg-muted/40 rounded-xl max-w-full overflow-x-auto justify-start">
                 <TabsTrigger value="patient" data-testid="dg-tab-patient" className="rounded-lg">Assinatura paciente</TabsTrigger>
                 <TabsTrigger value="pro" data-testid="dg-tab-pro" className="rounded-lg">Assinatura profissional</TabsTrigger>
                 <TabsTrigger value="qr" data-testid="dg-tab-qr" className="rounded-lg">

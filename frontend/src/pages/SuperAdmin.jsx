@@ -96,7 +96,7 @@ export default function SuperAdmin() {
         </div>
 
         <Tabs defaultValue="clinics" className="w-full">
-          <TabsList className="bg-muted/40 rounded-xl">
+          <TabsList className="bg-muted/40 rounded-xl max-w-full overflow-x-auto justify-start">
             <TabsTrigger value="clinics" data-testid="tab-clinics" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">Clínicas</TabsTrigger>
             <TabsTrigger value="coupons" data-testid="tab-coupons" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">Cupons</TabsTrigger>
             <TabsTrigger value="emails" data-testid="tab-emails" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">Emails</TabsTrigger>
@@ -104,7 +104,7 @@ export default function SuperAdmin() {
 
           {/* Clinics */}
           <TabsContent value="clinics" className="mt-5">
-            <div className="rounded-2xl border border-border bg-card overflow-hidden" data-testid="clinics-table">
+            <div className="rounded-2xl border border-border bg-card overflow-x-auto" data-testid="clinics-table">
               <table className="w-full text-sm">
                 <thead className="bg-muted/30">
                   <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">

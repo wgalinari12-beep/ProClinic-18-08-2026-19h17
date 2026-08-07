@@ -140,7 +140,7 @@ export default function PatientFinanceTab({ patientId, patientEmail, patientPhon
       {summary.entries.length === 0 ? (
         <p className="text-sm text-muted-foreground py-12 text-center">Sem lançamentos financeiros para este paciente.</p>
       ) : (
-        <div className="rounded-xl border border-border overflow-hidden">
+        <div className="rounded-xl border border-border overflow-x-auto">
           <table className="w-full text-sm" data-testid="pf-entries-table">
             <thead className="bg-muted/30">
               <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">

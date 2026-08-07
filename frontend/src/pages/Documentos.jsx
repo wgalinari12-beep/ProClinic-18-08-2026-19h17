@@ -71,7 +71,7 @@ export default function Documentos() {
 
       <div className="p-6 sm:p-8 animate-fade-up">
         <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="bg-muted/40 rounded-xl">
+          <TabsList className="bg-muted/40 rounded-xl max-w-full overflow-x-auto justify-start">
             {isAdmin && (
               <TabsTrigger value="library" data-testid="tab-library" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                 <Library className="h-4 w-4 mr-1.5" /> Biblioteca de modelos
@@ -133,7 +133,7 @@ export default function Documentos() {
                 <p className="text-xs text-muted-foreground/70 mt-1">Gere documentos durante o atendimento ou pela ficha do paciente.</p>
               </div>
             ) : (
-              <div className="rounded-xl border border-border bg-card overflow-hidden" data-testid="documents-list">
+              <div className="rounded-xl border border-border bg-card overflow-x-auto" data-testid="documents-list">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/30">
                     <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">

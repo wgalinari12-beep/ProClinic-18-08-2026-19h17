@@ -5,6 +5,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 import os
 import io
+import csv
 import re
 import uuid
 import asyncio
@@ -1267,6 +1268,106 @@ async def whatsapp_receipt_link(entry_id: str, user: dict = Depends(get_current_
     encoded = urllib.parse.quote(msg)
     wa_link = f"https://wa.me/{phone_digits}?text={encoded}" if phone_digits else f"https://wa.me/?text={encoded}"
     return {"whatsapp_url": wa_link, "phone": phone_digits or None, "receipt_number": entry["receipt_number"]}
+
+
+# ============================================================
+# Export (CSV) — Lote 4 / Fase A (aditivo, somente leitura)
+# ============================================================
+def _csv_response(rows: List[List[Any]], filename: str) -> Response:
+    """Gera uma resposta CSV (delimitador ';' + BOM UTF-8) amigável ao Excel pt-BR."""
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";")
+    for r in rows:
+        writer.writerow(["" if c is None else c for c in r])
+    content = ("\ufeff" + buf.getvalue()).encode("utf-8")
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _brl_number(v: Any) -> str:
+    """Formata número no padrão pt-BR (1234.5 -> '1.234,50')."""
+    try:
+        return f"{float(v or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return "0,00"
+
+
+@api_router.get("/export/patients.csv")
+async def export_patients_csv(user: dict = Depends(get_current_user), search: str = ""):
+    """Exporta a lista de pacientes da clínica em CSV."""
+    q: Dict[str, Any] = {"clinic_id": user["clinic_id"]}
+    if search:
+        q["name"] = {"$regex": search, "$options": "i"}
+    docs = await db.patients.find(q, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    header = ["Nome", "CPF", "Nascimento", "Telefone", "WhatsApp", "Email",
+              "Cidade", "Estado", "Alergias", "Status", "Criado em"]
+    rows: List[List[Any]] = [header]
+    for p in docs:
+        rows.append([
+            p.get("name", ""), p.get("cpf", ""), p.get("birth_date", ""),
+            p.get("phone", ""), p.get("whatsapp", ""), p.get("email", ""),
+            p.get("city", ""), p.get("state", ""), p.get("allergies", ""),
+            p.get("status", ""), (p.get("created_at", "") or "")[:10],
+        ])
+    return _csv_response(rows, "pacientes.csv")
+
+
+@api_router.get("/export/finance.csv")
+async def export_finance_csv(
+    user: dict = Depends(get_current_user),
+    type: Optional[Literal["receita", "despesa"]] = None,
+    paid: Optional[bool] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    search: Optional[str] = None,
+):
+    """Exporta os lançamentos financeiros da clínica em CSV (respeita filtros de período/tipo)."""
+    require_finance_read(user)
+    q: Dict[str, Any] = {"clinic_id": user["clinic_id"]}
+    if type:
+        q["type"] = type
+    if paid is not None:
+        q["paid"] = paid
+    if date_from or date_to:
+        rng: Dict[str, str] = {}
+        if date_from:
+            rng["$gte"] = date_from
+        if date_to:
+            rng["$lte"] = date_to
+        q["due_date"] = rng
+    if search:
+        rx = {"$regex": re.escape(search), "$options": "i"}
+        q["$or"] = [{"description": rx}, {"category": rx}, {"notes": rx}]
+    docs = await db.financial_entries.find(q, {"_id": 0}).sort("due_date", -1).to_list(10000)
+
+    # Resolve nomes de pacientes em lote (evita N consultas)
+    pat_ids = list({d.get("patient_id") for d in docs if d.get("patient_id")})
+    name_map: Dict[str, str] = {}
+    if pat_ids:
+        pats = await db.patients.find(
+            {"clinic_id": user["clinic_id"], "patient_id": {"$in": pat_ids}},
+            {"_id": 0, "patient_id": 1, "name": 1},
+        ).to_list(len(pat_ids))
+        name_map = {p["patient_id"]: p.get("name", "") for p in pats}
+
+    header = ["Tipo", "Categoria", "Descrição", "Valor (R$)", "Vencimento", "Pago",
+              "Forma de pagamento", "Parcela", "Paciente", "Recibo", "Criado em"]
+    rows: List[List[Any]] = [header]
+    for e in docs:
+        it = e.get("installment_total") or 1
+        parcela = f"{e.get('installment_number', 1)}/{it}" if it and int(it) > 1 else "Único"
+        rows.append([
+            e.get("type", ""), e.get("category", ""), e.get("description", ""),
+            _brl_number(e.get("amount")), e.get("due_date", ""),
+            "Sim" if e.get("paid") else "Não",
+            e.get("payment_method", ""), parcela,
+            name_map.get(e.get("patient_id", ""), ""),
+            e.get("receipt_number", ""), (e.get("created_at", "") or "")[:10],
+        ])
+    return _csv_response(rows, "financeiro.csv")
 
 
 # ============================================================

@@ -63,7 +63,7 @@ export default function Prontuario() {
             </DialogTrigger>
             <DialogContent className="max-w-2xl rounded-2xl">
               <DialogHeader><DialogTitle className="font-display text-2xl tracking-tight">Nova evolução clínica</DialogTitle></DialogHeader>
-              <form onSubmit={onSubmit} className="grid grid-cols-2 gap-4" data-testid="record-form">
+              <form onSubmit={onSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-4" data-testid="record-form">
                 <div className="col-span-2 space-y-1.5">
                   <Label className="text-xs uppercase tracking-wider text-muted-foreground">Paciente *</Label>
                   <select required data-testid="rec-patient" value={form.patient_id}

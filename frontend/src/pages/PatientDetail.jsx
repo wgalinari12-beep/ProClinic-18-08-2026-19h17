@@ -162,7 +162,7 @@ export default function PatientDetail() {
         {/* Tabs */}
         <div className="lg:col-span-2 rounded-2xl border border-border bg-card p-6">
           <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="patient-tabs">
-            <TabsList className="bg-muted/50 rounded-xl">
+            <TabsList className="bg-muted/50 rounded-xl max-w-full overflow-x-auto justify-start">
               <TabsTrigger value="timeline" data-testid="tab-timeline" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                 <CalendarDays className="h-4 w-4 mr-1.5" />Timeline
               </TabsTrigger>
@@ -286,7 +286,7 @@ export default function PatientDetail() {
                 {signedDocs.length === 0 ? (
                   <p className="text-sm text-muted-foreground py-8 text-center">Nenhum documento gerado para este paciente.</p>
                 ) : (
-                  <div className="rounded-xl border border-border bg-card overflow-hidden">
+                  <div className="rounded-xl border border-border bg-card overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead className="bg-muted/30">
                         <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground">

@@ -114,7 +114,7 @@ export default function Equipe() {
         }
       />
       <div className="p-6 sm:p-8 animate-fade-up">
-        <div className="rounded-2xl border border-border bg-card overflow-hidden">
+        <div className="rounded-2xl border border-border bg-card overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted/30 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
               <tr>
