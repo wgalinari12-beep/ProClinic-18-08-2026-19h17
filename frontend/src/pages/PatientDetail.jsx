@@ -8,7 +8,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   ArrowLeft, Phone, Mail, MapPin, AlertTriangle, CalendarDays,
-  FileText, ClipboardList, Image as ImageIcon, Cake, Wallet, FileSignature, ExternalLink, Activity,
+  ClipboardList, Cake, Wallet, FileSignature, ExternalLink, Activity,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -25,15 +25,15 @@ export default function PatientDetail() {
   const { user } = useAuth();
   const [patient, setPatient] = useState(null);
   const [appointments, setAppointments] = useState([]);
-  const [records, setRecords] = useState([]);
   const [anamnesis, setAnamnesis] = useState([]);
   const [budgets, setBudgets] = useState([]);
   const [signedDocs, setSignedDocs] = useState([]);
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetId, setBudgetId] = useState(null);
   const [docGenOpen, setDocGenOpen] = useState(false);
-  // ⭐ Fase 4/7: navegação entre abas + foco na sessão da timeline
-  const [activeTab, setActiveTab] = useState("timeline");
+  // ⭐ Fase 4/7 + Lote 4/Fase B (B3): "Histórico" (timeline clínica) é a aba principal.
+  // Recepção (sem acesso clínico) mantém a Timeline de agendamentos como aba inicial.
+  const [activeTab, setActiveTab] = useState(user?.role === "recepcao" ? "timeline" : "clinica");
   const [focusSession, setFocusSession] = useState(null);
 
   const openOriginalSession = (sid) => {
@@ -51,7 +51,6 @@ export default function PatientDetail() {
           api.get(`/appointments`),
         ];
         if (canClinical) {
-          calls.push(api.get(`/medical-records`, { params: { patient_id: id } }));
           calls.push(api.get(`/anamnesis`, { params: { patient_id: id } }));
           calls.push(api.get(`/budgets`, { params: { patient_id: id } }));
           calls.push(api.get(`/documents`, { params: { patient_id: id } }));
@@ -60,10 +59,9 @@ export default function PatientDetail() {
         setPatient(res[0].data);
         setAppointments(res[1].data.filter((a) => a.patient_id === id));
         if (canClinical) {
-          setRecords(res[2].data);
-          setAnamnesis(res[3].data);
-          setBudgets(res[4].data);
-          setSignedDocs(res[5].data);
+          setAnamnesis(res[2].data);
+          setBudgets(res[3].data);
+          setSignedDocs(res[4].data);
         }
       } catch (e) {
         console.error(e);
@@ -163,16 +161,15 @@ export default function PatientDetail() {
         <div className="lg:col-span-2 rounded-2xl border border-border bg-card p-6">
           <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="patient-tabs">
             <TabsList className="bg-muted/50 rounded-xl max-w-full overflow-x-auto justify-start">
-              <TabsTrigger value="timeline" data-testid="tab-timeline" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
-                <CalendarDays className="h-4 w-4 mr-1.5" />Timeline
-              </TabsTrigger>
+              {!canClinical && (
+                <TabsTrigger value="timeline" data-testid="tab-timeline" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
+                  <CalendarDays className="h-4 w-4 mr-1.5" />Timeline
+                </TabsTrigger>
+              )}
               {canClinical && (
                 <>
-                  <TabsTrigger value="prontuario" data-testid="tab-prontuario" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
-                    <FileText className="h-4 w-4 mr-1.5" />Prontuário
-                  </TabsTrigger>
                   <TabsTrigger value="clinica" data-testid="tab-clinica" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
-                    <Activity className="h-4 w-4 mr-1.5" />Clínica
+                    <Activity className="h-4 w-4 mr-1.5" />Histórico
                   </TabsTrigger>
                   <TabsTrigger value="anamnese" data-testid="tab-anamnese" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                     <ClipboardList className="h-4 w-4 mr-1.5" />Anamnese
@@ -209,35 +206,6 @@ export default function PatientDetail() {
                       </div>
                       <div className="font-medium mt-0.5">{a.procedure}</div>
                       <div className="text-xs text-muted-foreground">{a.professional_name} · {a.status}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="prontuario" className="mt-5">
-              {!canClinical ? null : records.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-8 text-center">Nenhum registro clínico.</p>
-              ) : (
-                <div className="space-y-4">
-                  {records.map((r) => (
-                    <div key={r.record_id} className="border border-border rounded-xl p-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="font-medium">{r.procedure}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {format(parseISO(r.created_at), "dd/MM/yyyy", { locale: ptBR })} · {r.professional_name}
-                          </div>
-                        </div>
-                        {r.signed && <Badge className="bg-success/15 text-success border-success/30">Assinado</Badge>}
-                      </div>
-                      <p className="text-sm text-muted-foreground mt-3">{r.evolution}</p>
-                      {(r.photos_before?.length > 0 || r.photos_after?.length > 0) && (
-                        <div className="flex items-center gap-1 mt-3 text-xs text-primary">
-                          <ImageIcon className="h-3.5 w-3.5" />
-                          {(r.photos_before?.length || 0) + (r.photos_after?.length || 0)} fotos
-                        </div>
-                      )}
                     </div>
                   ))}
                 </div>

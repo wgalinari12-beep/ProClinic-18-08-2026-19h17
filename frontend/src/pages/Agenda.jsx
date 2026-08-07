@@ -471,7 +471,8 @@ export default function Agenda() {
       <div className="p-6 sm:p-8 animate-fade-up">
         <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
           {viewMode === "all" ? (
-          <div className="rounded-2xl border border-border bg-card overflow-hidden">
+          <div className="rounded-2xl border border-border bg-card overflow-x-auto">
+            <div className="min-w-[920px]">
             {/* Header days */}
             <div className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border bg-muted/30">
               <div />
@@ -508,10 +509,12 @@ export default function Agenda() {
                 </React.Fragment>
               ))}
             </div>
+            </div>
           </div>
           ) : (
           /* By-professional view: single day × N professionals */
-          <div className="rounded-2xl border border-border bg-card overflow-hidden" data-testid="agenda-bypro-grid">
+          <div className="rounded-2xl border border-border bg-card overflow-x-auto" data-testid="agenda-bypro-grid">
+            <div style={{ minWidth: 60 + Math.max(1, professionals.length) * 160 }}>
             <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
               <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
                 {format(weekStart, "EEEE, dd 'de' MMMM yyyy", { locale: ptBR })}
@@ -559,6 +562,7 @@ export default function Agenda() {
                   })}
                 </React.Fragment>
               ))}
+            </div>
             </div>
           </div>
           )}

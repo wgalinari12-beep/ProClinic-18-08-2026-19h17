@@ -1370,6 +1370,175 @@ async def export_finance_csv(
     return _csv_response(rows, "financeiro.csv")
 
 
+# ----- XLSX / PDF (Lote 4 / Fase B) -----
+def _xlsx_response(header: List[str], rows: List[List[Any]], filename: str, sheet_name: str = "Dados") -> Response:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name[:31]
+    ws.append(header)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for r in rows:
+        ws.append(["" if c is None else c for c in r])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+async def _fetch_finance_docs(user: dict, type, paid, date_from, date_to, search):
+    q: Dict[str, Any] = {"clinic_id": user["clinic_id"]}
+    if type:
+        q["type"] = type
+    if paid is not None:
+        q["paid"] = paid
+    if date_from or date_to:
+        rng: Dict[str, str] = {}
+        if date_from:
+            rng["$gte"] = date_from
+        if date_to:
+            rng["$lte"] = date_to
+        q["due_date"] = rng
+    if search:
+        rx = {"$regex": re.escape(search), "$options": "i"}
+        q["$or"] = [{"description": rx}, {"category": rx}, {"notes": rx}]
+    docs = await db.financial_entries.find(q, {"_id": 0}).sort("due_date", -1).to_list(10000)
+    pat_ids = list({d.get("patient_id") for d in docs if d.get("patient_id")})
+    name_map: Dict[str, str] = {}
+    if pat_ids:
+        pats = await db.patients.find(
+            {"clinic_id": user["clinic_id"], "patient_id": {"$in": pat_ids}},
+            {"_id": 0, "patient_id": 1, "name": 1},
+        ).to_list(len(pat_ids))
+        name_map = {p["patient_id"]: p.get("name", "") for p in pats}
+    return docs, name_map
+
+
+@api_router.get("/export/patients.xlsx")
+async def export_patients_xlsx(user: dict = Depends(get_current_user), search: str = ""):
+    q: Dict[str, Any] = {"clinic_id": user["clinic_id"]}
+    if search:
+        q["name"] = {"$regex": search, "$options": "i"}
+    docs = await db.patients.find(q, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    header = ["Nome", "CPF", "Nascimento", "Telefone", "WhatsApp", "Email",
+              "Cidade", "Estado", "Alergias", "Status", "Criado em"]
+    rows: List[List[Any]] = []
+    for p in docs:
+        rows.append([
+            p.get("name", ""), p.get("cpf", ""), p.get("birth_date", ""),
+            p.get("phone", ""), p.get("whatsapp", ""), p.get("email", ""),
+            p.get("city", ""), p.get("state", ""), p.get("allergies", ""),
+            p.get("status", ""), (p.get("created_at", "") or "")[:10],
+        ])
+    return _xlsx_response(header, rows, "pacientes.xlsx", "Pacientes")
+
+
+@api_router.get("/export/finance.xlsx")
+async def export_finance_xlsx(
+    user: dict = Depends(get_current_user),
+    type: Optional[Literal["receita", "despesa"]] = None,
+    paid: Optional[bool] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    search: Optional[str] = None,
+):
+    require_finance_read(user)
+    docs, name_map = await _fetch_finance_docs(user, type, paid, date_from, date_to, search)
+    header = ["Tipo", "Categoria", "Descrição", "Valor", "Vencimento", "Pago",
+              "Forma de pagamento", "Parcela", "Paciente", "Recibo", "Criado em"]
+    rows: List[List[Any]] = []
+    for e in docs:
+        it = e.get("installment_total") or 1
+        parcela = f"{e.get('installment_number', 1)}/{it}" if it and int(it) > 1 else "Único"
+        rows.append([
+            e.get("type", ""), e.get("category", ""), e.get("description", ""),
+            float(e.get("amount") or 0), e.get("due_date", ""),
+            "Sim" if e.get("paid") else "Não",
+            e.get("payment_method", ""), parcela,
+            name_map.get(e.get("patient_id", ""), ""),
+            e.get("receipt_number", ""), (e.get("created_at", "") or "")[:10],
+        ])
+    return _xlsx_response(header, rows, "financeiro.xlsx", "Financeiro")
+
+
+@api_router.get("/export/finance.pdf")
+async def export_finance_pdf(
+    user: dict = Depends(get_current_user),
+    type: Optional[Literal["receita", "despesa"]] = None,
+    paid: Optional[bool] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    search: Optional[str] = None,
+):
+    require_finance_read(user)
+    docs, name_map = await _fetch_finance_docs(user, type, paid, date_from, date_to, search)
+    clinic = await db.clinics.find_one({"clinic_id": user["clinic_id"]}, {"_id": 0}) or {}
+    primary = clinic.get("primary_color") or "#B76E79"
+    clinic_name = clinic.get("name") or "ProClinic"
+    receitas = sum(float(d.get("amount") or 0) for d in docs if d.get("type") == "receita" and d.get("paid"))
+    despesas = sum(float(d.get("amount") or 0) for d in docs if d.get("type") == "despesa" and d.get("paid"))
+    a_receber = sum(float(d.get("amount") or 0) for d in docs if d.get("type") == "receita" and not d.get("paid"))
+    saldo = receitas - despesas
+    periodo = f"{date_from or '—'} a {date_to or '—'}" if (date_from or date_to) else "Todos os lançamentos"
+
+    def _row_html(e):
+        it = e.get("installment_total") or 1
+        parcela = f"{e.get('installment_number', 1)}/{it}" if it and int(it) > 1 else "Único"
+        cor = "#3d7a2a" if e.get("paid") else "#a06a00"
+        return (
+            f"<tr><td>{e.get('due_date','')}</td>"
+            f"<td>{e.get('type','')}</td>"
+            f"<td>{(e.get('description','') or '')[:48]}</td>"
+            f"<td>{name_map.get(e.get('patient_id',''),'')}</td>"
+            f"<td style='text-align:right'>R$ {_brl_number(e.get('amount'))}</td>"
+            f"<td style='color:{cor}'>{'Pago' if e.get('paid') else 'Pendente'}</td></tr>"
+        )
+
+    rows_html = "".join(_row_html(e) for e in docs) or "<tr><td colspan='6'>Nenhum lançamento no período.</td></tr>"
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      @page {{ size: A4; margin: 16mm 14mm; }}
+      body {{ font-family: Helvetica, Arial, sans-serif; color: #1a1a1a; font-size: 9pt; }}
+      .brand {{ font-family: Georgia, serif; font-size: 9pt; letter-spacing: 3pt; color: {primary}; text-transform: uppercase; }}
+      h1 {{ font-family: Georgia, serif; font-size: 18pt; margin: 2pt 0 2pt; }}
+      .sub {{ color: #666; margin-bottom: 12pt; font-size: 9pt; }}
+      .cards {{ width: 100%; margin-bottom: 14pt; }}
+      .card {{ display: inline-block; width: 23%; border: 1px solid #e6ded7; border-radius: 6pt; padding: 8pt; margin-right: 1%; }}
+      .card .k {{ color: #888; font-size: 7pt; text-transform: uppercase; letter-spacing: 1pt; }}
+      .card .v {{ font-family: Georgia, serif; font-size: 12pt; margin-top: 3pt; }}
+      table {{ width: 100%; border-collapse: collapse; }}
+      th {{ text-align: left; font-size: 7pt; text-transform: uppercase; letter-spacing: 1pt; color: #888; border-bottom: 1px solid #ddd; padding: 4pt; }}
+      td {{ padding: 4pt; border-bottom: 1px solid #f0f0f0; }}
+      .footer {{ margin-top: 16pt; font-size: 7pt; color: #999; text-align: center; }}
+    </style></head><body>
+      <div class="brand">Relatório Financeiro</div>
+      <h1>{clinic_name}</h1>
+      <div class="sub">Período: {periodo} · Emitido em {datetime.now(timezone.utc).strftime('%d/%m/%Y')}</div>
+      <div class="cards">
+        <div class="card"><div class="k">Receitas pagas</div><div class="v" style="color:#3d7a2a">R$ {_brl_number(receitas)}</div></div>
+        <div class="card"><div class="k">Despesas pagas</div><div class="v" style="color:#b3261e">R$ {_brl_number(despesas)}</div></div>
+        <div class="card"><div class="k">Saldo</div><div class="v" style="color:{primary}">R$ {_brl_number(saldo)}</div></div>
+        <div class="card"><div class="k">A receber</div><div class="v">R$ {_brl_number(a_receber)}</div></div>
+      </div>
+      <table>
+        <thead><tr><th>Vencimento</th><th>Tipo</th><th>Descrição</th><th>Paciente</th><th style="text-align:right">Valor</th><th>Status</th></tr></thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+      <div class="footer">{clinic_name} · Relatório gerado eletronicamente pelo ProClinic · {len(docs)} lançamento(s)</div>
+    </body></html>"""
+    buf = io.BytesIO()
+    pisa.CreatePDF(src=html, dest=buf, encoding="utf-8")
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="financeiro.pdf"'},
+    )
+
+
 # ============================================================
 # Dashboard
 # ============================================================

@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
-import { Plus, Search, User as UserIcon, Phone, Mail, AlertTriangle, Download } from "lucide-react";
+import { Plus, Search, User as UserIcon, Phone, Mail, AlertTriangle, Download, ChevronDown } from "lucide-react";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { formatApiErrorDetail, downloadFile } from "@/lib/api";
 
@@ -55,13 +56,14 @@ export default function Patients() {
   const setField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const [exporting, setExporting] = useState(false);
-  const onExportCsv = async () => {
+  const onExport = async (fmt) => {
     setExporting(true);
     try {
-      await downloadFile("/export/patients.csv", "pacientes.csv", search ? { search } : {});
-      toast.success("CSV exportado");
+      const params = search ? { search } : {};
+      await downloadFile(`/export/patients.${fmt}`, `pacientes.${fmt}`, params);
+      toast.success(`Exportado (${fmt.toUpperCase()})`);
     } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Falha ao exportar CSV");
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Falha ao exportar");
     } finally {
       setExporting(false);
     }
@@ -74,9 +76,17 @@ export default function Patients() {
         subtitle={`${patients.length} registrados`}
         actions={
           <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="rounded-xl h-10" onClick={onExportCsv} disabled={exporting} data-testid="export-patients-csv">
-            <Download className="h-4 w-4 mr-1.5" /> {exporting ? "Exportando..." : "Exportar CSV"}
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" className="rounded-xl h-10" disabled={exporting} data-testid="export-patients-btn">
+                <Download className="h-4 w-4 mr-1.5" /> {exporting ? "Exportando..." : "Exportar"} <ChevronDown className="h-3.5 w-3.5 ml-1" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="rounded-xl">
+              <DropdownMenuItem onClick={() => onExport("csv")} data-testid="export-patients-csv">CSV (.csv)</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onExport("xlsx")} data-testid="export-patients-xlsx">Excel (.xlsx)</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button data-testid="new-patient-btn" className="rounded-xl h-10 bg-primary text-primary-foreground hover:bg-primary/90">

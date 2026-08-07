@@ -137,3 +137,21 @@
 ---
 
 **STATUS: AGUARDANDO SUA APROVAÇÃO. Nenhuma implementação, teste automático (Playwright/testing agent), migração ou alteração de schema será executada sem sua autorização explícita — fase a fase.**
+
+---
+
+## STATUS DE EXECUÇÃO
+
+### ✅ FASE A — CONCLUÍDA (aprovada e implementada)
+- A1 scroll horizontal nos TabsList · A2 tabelas roláveis · A3 formulários responsivos · A4 auto-collapse do sidebar (<1280px) · A5 export CSV (Pacientes/Financeiro) · A6 Prontuário/Anamnese ocultos do menu (rotas mantidas).
+
+### ✅ FASE B — CONCLUÍDA (aprovada e implementada)
+- B1 Agenda responsiva (scroll horizontal + largura mínima nas duas visões).
+- B2 Drawer mobile do sidebar (<1024px) com hambúrguer + overlay.
+- B3 Abas do paciente consolidadas: "Histórico" (timeline clínica) é a principal; abas redundantes "Timeline" e "Prontuário" removidas para usuários clínicos (recepção mantém Timeline de agendamentos). Rotas/testids preservados.
+- B4 Export XLSX + PDF (Financeiro) e XLSX (Pacientes) com menu de formato (CSV/Excel/PDF).
+
+Verificação: backend validado via curl (200/content-type corretos); frontend validado via screenshots (desktop + mobile). Testing agent NÃO executado (conforme instrução do usuário).
+
+### ⏳ FASE C — PENDENTE DE APROVAÇÃO
+- C1 depreciar/consolidar módulos globais Prontuário/Anamnese · C2 filtros + paginação/lazy na Timeline · C3 PDF consolidado de prontuário.
