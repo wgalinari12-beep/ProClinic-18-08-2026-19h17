@@ -1,4 +1,1 @@
 cron=3.0pl1-162
-libcairo2-dev=1.16.0-7
-libpango1.0-dev=1.50.12+ds-1
-pkg-config=1.8.1-1

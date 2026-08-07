@@ -153,5 +153,11 @@
 
 Verificação: backend validado via curl (200/content-type corretos); frontend validado via screenshots (desktop + mobile). Testing agent NÃO executado (conforme instrução do usuário).
 
-### ⏳ FASE C — PENDENTE DE APROVAÇÃO
-- C1 depreciar/consolidar módulos globais Prontuário/Anamnese · C2 filtros + paginação/lazy na Timeline · C3 PDF consolidado de prontuário.
+### ⏳ FASE C — CONCLUÍDA (aprovada e implementada)
+- C1 Prontuário e Anamnese globais convertidos em telas SOMENTE LEITURA, com banner explicativo e clique que leva ao Histórico do paciente (criação removida; rotas mantidas, ocultas do menu).
+- C2 Timeline Inteligente: busca textual + filtros (profissional, tipo de evento, período de datas) + carregamento em partes ("Carregar mais", 10 por vez) — tudo client-side, sem alterar o contrato da API `/patients/{id}/timeline`.
+- C3 Prontuário em PDF: novo endpoint `GET /patients/{id}/prontuario-pdf` gera um PDF único reunindo todas as sessões (evolução, protocolo, prescrição, ficha e assinaturas com metadados forenses); botão "Prontuário Completo (PDF)" no Histórico.
+
+Verificação: backend validado via curl + geração real de PDF (200, dados de teste temporários criados e removidos); frontend validado via screenshots. Testing agent NÃO executado (conforme instrução do usuário).
+
+Nota técnica: o `REACT_APP_BACKEND_URL` correto do ambiente é `https://sync-clinic-repo.preview.emergentagent.com` (o `.env` foi atualizado pela plataforma). Frontend e backend compartilham o mesmo host em produção, portanto não há problema de CORS no uso real.

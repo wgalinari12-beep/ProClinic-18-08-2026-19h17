@@ -3,10 +3,11 @@ import api from "@/lib/api";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   ChevronDown, ChevronRight, Clock, CheckCircle2, FileText,
   ClipboardList, Wallet, Receipt, PenLine, Camera, ShieldCheck,
-  FileDown, Loader2,
+  FileDown, Loader2, Search,
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -24,6 +25,15 @@ export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
   const [data, setData] = useState(null);
   const [expanded, setExpanded] = useState(new Set());
   const [pdfBusy, setPdfBusy] = useState(false);
+  // ⭐ Lote 4 / Fase C: prontuário PDF + filtros + carregamento em partes
+  const [prontBusy, setProntBusy] = useState(false);
+  const PAGE = 10;
+  const [q, setQ] = useState("");
+  const [proFilter, setProFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [dFrom, setDFrom] = useState("");
+  const [dTo, setDTo] = useState("");
+  const [visibleCount, setVisibleCount] = useState(PAGE);
 
   const load = useCallback(async () => {
     try {
@@ -65,6 +75,24 @@ export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
     }
   };
 
+  const downloadProntuarioPDF = async () => {
+    setProntBusy(true);
+    try {
+      const { data } = await api.get(`/patients/${patientId}/prontuario-pdf`);
+      if (data?.url) {
+        const base = process.env.REACT_APP_BACKEND_URL || "";
+        const full = data.url.startsWith("http") ? data.url : `${base}${data.url}`;
+        window.open(full, "_blank");
+        toast.success("Prontuário completo gerado");
+      }
+    } catch (e) {
+      const msg = e?.response?.data?.detail || "Falha ao gerar prontuário PDF";
+      toast.error(msg);
+    } finally {
+      setProntBusy(false);
+    }
+  };
+
   const toggle = (sid) => {
     setExpanded((prev) => {
       const s = new Set(prev);
@@ -78,23 +106,64 @@ export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
 
   const { sessions = [], legacy_records = [], counts = {} } = data;
 
+  // ⭐ Lote 4 / Fase C (C2): filtros + carregamento em partes (client-side)
+  const professionals = Array.from(new Set(sessions.map((s) => s.professional_name).filter(Boolean)));
+  const hasType = (s, t) => {
+    if (t === "all") return true;
+    if (t === "evolucao") return !!s.medical_record;
+    if (t === "ficha") return s.ficha_snapshot && Object.keys(s.ficha_snapshot).length > 0;
+    if (t === "assinatura") return !!(s.signatures?.consent || s.signatures?.evolution);
+    if (t === "financeiro") return (s.financial_entries?.length > 0) || !!s.budget;
+    return true;
+  };
+  const ql = q.trim().toLowerCase();
+  const filtered = sessions.filter((s) => {
+    if (proFilter !== "all" && s.professional_name !== proFilter) return false;
+    if (!hasType(s, typeFilter)) return false;
+    const d = (s.started_at || "").slice(0, 10);
+    if (dFrom && d && d < dFrom) return false;
+    if (dTo && d && d > dTo) return false;
+    if (ql) {
+      const hay = [s.procedure, s.professional_name, s.medical_record?.evolution,
+        s.medical_record?.observations, s.session_number].filter(Boolean).join(" ").toLowerCase();
+      if (!hay.includes(ql)) return false;
+    }
+    return true;
+  });
+  const visible = filtered.slice(0, visibleCount);
+  const resetPage = () => setVisibleCount(PAGE);
+
   return (
     <div className="space-y-6" data-testid="clinical-timeline">
       {/* Actions */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h3 className="font-display text-lg font-semibold tracking-tight">Histórico Clínico</h3>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={downloadFichaPDF}
-          disabled={pdfBusy}
-          className="rounded-lg h-9 text-xs"
-          data-testid="download-ficha-pdf"
-        >
-          {pdfBusy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5 mr-1.5" />}
-          Baixar Ficha Premium (PDF)
-        </Button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={downloadProntuarioPDF}
+            disabled={prontBusy}
+            className="rounded-lg h-9 text-xs"
+            data-testid="download-prontuario-pdf"
+          >
+            {prontBusy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <FileText className="h-3.5 w-3.5 mr-1.5" />}
+            Prontuário Completo (PDF)
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={downloadFichaPDF}
+            disabled={pdfBusy}
+            className="rounded-lg h-9 text-xs"
+            data-testid="download-ficha-pdf"
+          >
+            {pdfBusy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <FileDown className="h-3.5 w-3.5 mr-1.5" />}
+            Baixar Ficha Premium (PDF)
+          </Button>
+        </div>
       </div>
 
       {/* Header stats */}
@@ -105,12 +174,39 @@ export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
         <StatCard label="Registros legado" value={counts.legacy} icon={FileText} tone="muted" />
       </div>
 
+      {/* ⭐ Fase C: filtros do histórico */}
+      {sessions.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap" data-testid="timeline-filters">
+          <div className="relative flex-1 min-w-[180px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input value={q} onChange={(e) => { setQ(e.target.value); resetPage(); }} placeholder="Buscar no histórico..." className="pl-9 h-9 rounded-lg text-sm" data-testid="timeline-search" />
+          </div>
+          <select value={proFilter} onChange={(e) => { setProFilter(e.target.value); resetPage(); }} className="h-9 rounded-lg border border-border bg-card px-2 text-xs" data-testid="timeline-pro-filter">
+            <option value="all">Todos profissionais</option>
+            {professionals.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <select value={typeFilter} onChange={(e) => { setTypeFilter(e.target.value); resetPage(); }} className="h-9 rounded-lg border border-border bg-card px-2 text-xs" data-testid="timeline-type-filter">
+            <option value="all">Todos os eventos</option>
+            <option value="evolucao">Com evolução</option>
+            <option value="ficha">Com ficha</option>
+            <option value="assinatura">Com assinatura</option>
+            <option value="financeiro">Com financeiro</option>
+          </select>
+          <input type="date" value={dFrom} onChange={(e) => { setDFrom(e.target.value); resetPage(); }} className="h-9 rounded-lg border border-border bg-card px-2 text-xs" data-testid="timeline-date-from" title="De" />
+          <input type="date" value={dTo} onChange={(e) => { setDTo(e.target.value); resetPage(); }} className="h-9 rounded-lg border border-border bg-card px-2 text-xs" data-testid="timeline-date-to" title="Até" />
+          <div className="text-[11px] text-muted-foreground">{filtered.length}/{sessions.length}</div>
+        </div>
+      )}
+
       {/* Sessions timeline */}
       {sessions.length === 0 && legacy_records.length === 0 ? (
         <p className="text-sm text-muted-foreground py-12 text-center">Nenhum atendimento registrado para este paciente ainda.</p>
       ) : (
         <ol className="relative border-l-2 border-border pl-6 space-y-4" data-testid="timeline-list">
-          {sessions.map((s) => {
+          {sessions.length > 0 && filtered.length === 0 && (
+            <li className="text-sm text-muted-foreground py-6" data-testid="timeline-no-results">Nenhum resultado para os filtros aplicados.</li>
+          )}
+          {visible.map((s) => {
             const isOpen = expanded.has(s.session_id);
             const meta = getStatusMeta(s.status); // ⭐ Fase 2/7: cor única de status
             const reopens = s.medical_record?.reopen_history || [];
@@ -317,6 +413,14 @@ export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
               </li>
             );
           })}
+
+          {filtered.length > visibleCount && (
+            <li className="pl-1 pt-1" data-testid="timeline-load-more-wrap">
+              <Button variant="outline" size="sm" className="rounded-lg text-xs" onClick={() => setVisibleCount((c) => c + PAGE)} data-testid="timeline-load-more">
+                Carregar mais ({filtered.length - visibleCount} restantes)
+              </Button>
+            </li>
+          )}
 
           {/* Legacy records */}
           {legacy_records.length > 0 && (

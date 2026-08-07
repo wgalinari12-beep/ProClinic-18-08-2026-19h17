@@ -3215,8 +3215,7 @@ async def patient_completeness(patient_id: str, user: dict = Depends(get_current
     return {"complete": len(missing) == 0, "missing": missing, "patient": p}
 
 
-@api_router.get("/patients/{patient_id}/timeline")
-async def patient_timeline(patient_id: str, user: dict = Depends(get_current_user)):
+async def _build_patient_timeline(patient_id: str, user: dict) -> Dict[str, Any]:
     """Timeline clínica consolidada por sessão (Fase 2 - Integridade Clínica).
     Retorna cada sessão de atendimento do paciente com todos os artefatos relacionados
     (dados clínicos, ficha, evolução, assinaturas) — agrupados e ordenados
@@ -3335,6 +3334,144 @@ async def patient_timeline(patient_id: str, user: dict = Depends(get_current_use
             "legacy": len(legacy_records),
         },
     }
+
+
+@api_router.get("/patients/{patient_id}/timeline")
+async def patient_timeline(patient_id: str, user: dict = Depends(get_current_user)):
+    return await _build_patient_timeline(patient_id, user)
+
+
+@api_router.get("/patients/{patient_id}/prontuario-pdf")
+async def patient_prontuario_pdf(patient_id: str, user: dict = Depends(get_current_user)):
+    """Lote 4 / Fase C (C3): PDF único e completo do prontuário do paciente,
+    reunindo todas as sessões (evolução, protocolo, prescrição, ficha e assinaturas)."""
+    forbid_recepcao_clinical(user)
+    clinic_id = user["clinic_id"]
+    patient = await db.patients.find_one({"patient_id": patient_id, "clinic_id": clinic_id}, {"_id": 0})
+    if not patient:
+        raise HTTPException(status_code=404, detail="Paciente não encontrado")
+    data = await _build_patient_timeline(patient_id, user)
+    clinic = await db.clinics.find_one({"clinic_id": clinic_id}, {"_id": 0}) or {}
+    primary = clinic.get("primary_color") or "#B76E79"
+    now_br = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M")
+
+    def _fmt_dt(iso):
+        if not iso:
+            return "—"
+        try:
+            return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            return str(iso)[:16]
+
+    def _sig_block(label, meta):
+        if not meta:
+            return ""
+        return (
+            f"<div class='sig'><b>{_html_escape(label)}</b><br/>"
+            f"Assinado em {_fmt_dt(meta.get('signed_at'))} por {_html_escape(meta.get('signed_by_name'))}"
+            f"{' · IP ' + _html_escape(meta.get('ip')) if meta.get('ip') else ''}<br/>"
+            f"<span class='hash'>SHA-256: {_html_escape(meta.get('sha256'))}</span></div>"
+        )
+
+    sections = []
+    for s in data.get("sessions", []):
+        rec = s.get("medical_record") or {}
+        parts = [
+            f"<div class='sess-head'>"
+            f"<span class='snum'>{_html_escape(s.get('session_number') or '—')}</span> "
+            f"<b>{_html_escape(s.get('procedure') or 'Atendimento')}</b> "
+            f"<span class='status'>{_html_escape(s.get('status') or '')}</span><br/>"
+            f"<span class='meta'>{_html_escape(s.get('professional_name') or '—')} · {_fmt_dt(s.get('started_at'))}</span>"
+            f"</div>"
+        ]
+        for fld, lbl in (("evolution", "Evolução"), ("observations", "Observações"),
+                         ("protocols", "Protocolo"), ("prescriptions", "Prescrição")):
+            if rec.get(fld):
+                parts.append(f"<div class='fld'><span class='fl'>{lbl}</span>"
+                             f"<div class='ft'>{_html_escape(rec.get(fld))}</div></div>")
+        ficha = s.get("ficha_snapshot") or {}
+        for mod, content in ficha.items():
+            answers = (content or {}).get("answers") or {}
+            html_mod = _render_module_html(f"Ficha · {mod}", answers)
+            if html_mod:
+                parts.append(html_mod)
+        sig = s.get("signatures") or {}
+        sig_html = _sig_block("Consentimento (TCLE)", sig.get("consent_meta")) + _sig_block("Evolução (Profissional)", sig.get("evolution_meta"))
+        if sig_html:
+            parts.append(f"<div class='sigs'>{sig_html}</div>")
+        sections.append(f"<div class='session'>{''.join(parts)}</div>")
+
+    for r in data.get("legacy_records", []):
+        body = _html_escape(r.get("evolution") or "")
+        sections.append(
+            f"<div class='session legacy'><div class='sess-head'><b>{_html_escape(r.get('procedure') or 'Registro manual')}</b>"
+            f"<span class='meta'> · {_fmt_dt(r.get('created_at'))}</span></div>"
+            f"<div class='ft'>{body}</div></div>"
+        )
+
+    if not sections:
+        raise HTTPException(status_code=400, detail="Paciente sem sessões clínicas registradas")
+
+    counts = data.get("counts", {})
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      @page {{ size: A4; margin: 16mm 14mm; }}
+      body {{ font-family: Helvetica, Arial, sans-serif; color: #1e1e1e; font-size: 10pt; }}
+      .brand {{ border-bottom: 2px solid {primary}; padding-bottom: 8pt; margin-bottom: 12pt; }}
+      .brand h1 {{ font-family: Georgia, serif; font-size: 20pt; color: {primary}; margin: 0; }}
+      .brand .sub {{ color: #666; font-size: 9pt; margin-top: 2pt; }}
+      .patient {{ background: #faf6f3; border-left: 3px solid {primary}; padding: 8pt 12pt; margin-bottom: 14pt; font-size: 9.5pt; }}
+      .patient b {{ color: {primary}; }}
+      .session {{ border: 1px solid #eadfd8; border-radius: 6pt; padding: 10pt 12pt; margin-bottom: 12pt; }}
+      .session.legacy {{ border-style: dashed; }}
+      .sess-head {{ border-bottom: 1px solid #f0eae5; padding-bottom: 5pt; margin-bottom: 6pt; }}
+      .snum {{ font-family: monospace; background: {primary}22; color: {primary}; padding: 1pt 5pt; border-radius: 4pt; font-size: 8pt; }}
+      .status {{ float: right; font-size: 8pt; color: #888; text-transform: uppercase; letter-spacing: 1pt; }}
+      .meta {{ color: #888; font-size: 8.5pt; }}
+      .fld {{ margin: 6pt 0; }}
+      .fl {{ display: block; font-size: 8pt; text-transform: uppercase; letter-spacing: 1pt; color: #999; margin-bottom: 2pt; }}
+      .ft {{ white-space: pre-wrap; font-size: 9.5pt; }}
+      h2 {{ font-family: Georgia, serif; font-size: 11pt; color: {primary}; margin: 10pt 0 4pt; }}
+      table.tbl {{ width: 100%; border-collapse: collapse; margin-bottom: 6pt; }}
+      table.tbl td {{ padding: 3pt 5pt; border-bottom: 1px solid #f2ece7; vertical-align: top; font-size: 9pt; }}
+      table.tbl td.k {{ width: 34%; color: #999; text-transform: capitalize; }}
+      .sigs {{ margin-top: 8pt; }}
+      .sig {{ background: #f2fbef; border: 1px solid #cfe9c4; border-radius: 5pt; padding: 6pt 8pt; margin-top: 5pt; font-size: 8pt; color: #3d5a2a; }}
+      .hash {{ font-family: monospace; font-size: 7pt; color: #888; word-break: break-all; }}
+      .footer {{ text-align: center; font-size: 8pt; color: #999; margin-top: 14pt; }}
+    </style></head><body>
+      <div class="brand">
+        <h1>{_html_escape(clinic.get('name') or 'ProClinic')}</h1>
+        <div class="sub">Prontuário Clínico Completo · Emitido em {now_br}</div>
+      </div>
+      <div class="patient">
+        <b>Paciente:</b> {_html_escape(patient.get('name') or '—')} &nbsp;·&nbsp;
+        <b>CPF:</b> {_html_escape(patient.get('cpf') or '—')} &nbsp;·&nbsp;
+        <b>Nasc.:</b> {_html_escape(patient.get('birth_date') or '—')} &nbsp;·&nbsp;
+        <b>Sessões:</b> {counts.get('sessions', 0)} &nbsp;·&nbsp;
+        <b>Legado:</b> {counts.get('legacy', 0)}
+      </div>
+      {''.join(sections)}
+      <div class="footer">Documento gerado por ProClinic — {_html_escape(clinic.get('name') or '')} · {now_br}</div>
+    </body></html>"""
+
+    buf = io.BytesIO()
+    pisa.CreatePDF(src=html, dest=buf, encoding="utf-8")
+    pdf_bytes = buf.getvalue()
+    rel_path = f"{APP_NAME}/{clinic_id}/prontuarios/{patient_id}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.pdf"
+    stored = put_object(rel_path, pdf_bytes, "application/pdf")
+    file_id = f"file_{uuid.uuid4().hex[:12]}"
+    sig = make_file_signature(file_id, clinic_id)
+    await db.files.insert_one({
+        "file_id": file_id, "storage_path": stored["path"],
+        "original_filename": f"prontuario-{patient.get('name') or patient_id}.pdf",
+        "content_type": "application/pdf",
+        "size": stored.get("size", len(pdf_bytes)), "clinic_id": clinic_id,
+        "kind": "prontuario_pdf", "patient_id": patient_id,
+        "is_deleted": False, "signature": sig,
+        "uploaded_by": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"file_id": file_id, "url": f"/api/files/{stored['path']}?sig={sig}", "size": len(pdf_bytes)}
 
 
 # ============================================================
