@@ -78,12 +78,19 @@ export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
   const downloadProntuarioPDF = async () => {
     setProntBusy(true);
     try {
-      const { data } = await api.get(`/patients/${patientId}/prontuario-pdf`);
+      const params = {};
+      if (dFrom) params.date_from = dFrom;
+      if (dTo) params.date_to = dTo;
+      if (proFilter !== "all") params.professional = proFilter;
+      if (typeFilter !== "all") params.type = typeFilter;
+      if (q.trim()) params.q = q.trim();
+      const { data } = await api.get(`/patients/${patientId}/prontuario-pdf`, { params });
       if (data?.url) {
         const base = process.env.REACT_APP_BACKEND_URL || "";
         const full = data.url.startsWith("http") ? data.url : `${base}${data.url}`;
         window.open(full, "_blank");
-        toast.success("Prontuário completo gerado");
+        const hasFilters = dFrom || dTo || proFilter !== "all" || typeFilter !== "all" || q.trim();
+        toast.success(hasFilters ? "Prontuário (com filtros) gerado" : "Prontuário completo gerado");
       }
     } catch (e) {
       const msg = e?.response?.data?.detail || "Falha ao gerar prontuário PDF";
@@ -145,11 +152,12 @@ export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
             size="sm"
             onClick={downloadProntuarioPDF}
             disabled={prontBusy}
+            title="Gera o PDF do histórico respeitando os filtros aplicados (período, profissional, evento e busca)"
             className="rounded-lg h-9 text-xs"
             data-testid="download-prontuario-pdf"
           >
             {prontBusy ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <FileText className="h-3.5 w-3.5 mr-1.5" />}
-            Prontuário Completo (PDF)
+            {(dFrom || dTo || proFilter !== "all" || typeFilter !== "all" || q.trim()) ? "Prontuário (Filtrado)" : "Prontuário Completo (PDF)"}
           </Button>
           <Button
             type="button"

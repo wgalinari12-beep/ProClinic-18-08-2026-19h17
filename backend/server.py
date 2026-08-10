@@ -3342,15 +3342,81 @@ async def patient_timeline(patient_id: str, user: dict = Depends(get_current_use
 
 
 @api_router.get("/patients/{patient_id}/prontuario-pdf")
-async def patient_prontuario_pdf(patient_id: str, user: dict = Depends(get_current_user)):
-    """Lote 4 / Fase C (C3): PDF único e completo do prontuário do paciente,
-    reunindo todas as sessões (evolução, protocolo, prescrição, ficha e assinaturas)."""
+async def patient_prontuario_pdf(
+    patient_id: str,
+    user: dict = Depends(get_current_user),
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    professional: Optional[str] = None,
+    type: Optional[str] = None,
+    q: Optional[str] = None,
+):
+    """Lote 4 / Fase C (C3 + PDF por Período): PDF único e completo do prontuário do paciente,
+    reunindo as sessões (evolução, protocolo, prescrição, ficha e assinaturas).
+    Respeita os filtros da timeline (período de datas, profissional, tipo de evento e busca)."""
     forbid_recepcao_clinical(user)
     clinic_id = user["clinic_id"]
     patient = await db.patients.find_one({"patient_id": patient_id, "clinic_id": clinic_id}, {"_id": 0})
     if not patient:
         raise HTTPException(status_code=404, detail="Paciente não encontrado")
     data = await _build_patient_timeline(patient_id, user)
+
+    # --- Filtros (espelham os filtros client-side da timeline) ---
+    def _sess_type_ok(s):
+        if not type or type == "all":
+            return True
+        if type == "evolucao":
+            return bool(s.get("medical_record"))
+        if type == "ficha":
+            return bool(s.get("ficha_snapshot")) and len(s.get("ficha_snapshot") or {}) > 0
+        if type == "assinatura":
+            sig = s.get("signatures") or {}
+            return bool(sig.get("consent") or sig.get("evolution"))
+        if type == "financeiro":
+            return bool((s.get("financial_entries") or [])) or bool(s.get("budget"))
+        return True
+
+    ql = (q or "").strip().lower()
+    df, dt = (date_from or ""), (date_to or "")
+    has_field_filter = bool((professional and professional != "all") or (type and type != "all") or ql)
+
+    def _sess_ok(s):
+        d = (s.get("started_at") or "")[:10]
+        if df and d and d < df:
+            return False
+        if dt and d and d > dt:
+            return False
+        if professional and professional != "all" and s.get("professional_name") != professional:
+            return False
+        if not _sess_type_ok(s):
+            return False
+        if ql:
+            rec = s.get("medical_record") or {}
+            hay = " ".join(str(x) for x in [
+                s.get("procedure"), s.get("professional_name"), s.get("session_number"),
+                rec.get("evolution"), rec.get("observations"),
+            ] if x).lower()
+            if ql not in hay:
+                return False
+        return True
+
+    data["sessions"] = [s for s in data.get("sessions", []) if _sess_ok(s)]
+    # Legado: aplica somente filtro de data/busca; some quando há filtro de profissional/tipo
+    def _legacy_ok(r):
+        if has_field_filter:
+            return False
+        d = (r.get("created_at") or "")[:10]
+        if df and d and d < df:
+            return False
+        if dt and d and d > dt:
+            return False
+        return True
+    data["legacy_records"] = [r for r in data.get("legacy_records", []) if _legacy_ok(r)]
+
+    periodo_label = ""
+    if df or dt:
+        periodo_label = f"{df or '…'} até {dt or '…'}"
+
     clinic = await db.clinics.find_one({"clinic_id": clinic_id}, {"_id": 0}) or {}
     primary = clinic.get("primary_color") or "#B76E79"
     now_br = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M")
@@ -3410,9 +3476,16 @@ async def patient_prontuario_pdf(patient_id: str, user: dict = Depends(get_curre
         )
 
     if not sections:
-        raise HTTPException(status_code=400, detail="Paciente sem sessões clínicas registradas")
+        detail = "Nenhum registro no período/filtros selecionados" if (df or dt or has_field_filter) else "Paciente sem sessões clínicas registradas"
+        raise HTTPException(status_code=400, detail=detail)
 
-    counts = data.get("counts", {})
+    fsess = data.get("sessions", [])
+    counts = {
+        "sessions": len(fsess),
+        "concluidas": sum(1 for s in fsess if s.get("status") == "concluido"),
+        "em_andamento": sum(1 for s in fsess if s.get("status") != "concluido"),
+        "legacy": len(data.get("legacy_records", [])),
+    }
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>
       @page {{ size: A4; margin: 16mm 14mm; }}
       body {{ font-family: Helvetica, Arial, sans-serif; color: #1e1e1e; font-size: 10pt; }}
@@ -3441,7 +3514,7 @@ async def patient_prontuario_pdf(patient_id: str, user: dict = Depends(get_curre
     </style></head><body>
       <div class="brand">
         <h1>{_html_escape(clinic.get('name') or 'ProClinic')}</h1>
-        <div class="sub">Prontuário Clínico Completo · Emitido em {now_br}</div>
+        <div class="sub">Prontuário Clínico{(' · Período: ' + periodo_label) if periodo_label else ''} · Emitido em {now_br}</div>
       </div>
       <div class="patient">
         <b>Paciente:</b> {_html_escape(patient.get('name') or '—')} &nbsp;·&nbsp;
@@ -3449,6 +3522,7 @@ async def patient_prontuario_pdf(patient_id: str, user: dict = Depends(get_curre
         <b>Nasc.:</b> {_html_escape(patient.get('birth_date') or '—')} &nbsp;·&nbsp;
         <b>Sessões:</b> {counts.get('sessions', 0)} &nbsp;·&nbsp;
         <b>Legado:</b> {counts.get('legacy', 0)}
+        {('<br/><b>Período:</b> ' + periodo_label) if periodo_label else ''}
       </div>
       {''.join(sections)}
       <div class="footer">Documento gerado por ProClinic — {_html_escape(clinic.get('name') or '')} · {now_br}</div>
