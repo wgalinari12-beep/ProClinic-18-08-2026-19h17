@@ -14,6 +14,12 @@ import { ptBR } from "date-fns/locale";
 import { getStatusMeta } from "@/lib/statusColors";
 
 const brl = (n) => (Number(n) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const DOC_STATUS_LABEL = {
+  rascunho: "Rascunho",
+  aguardando_paciente: "Aguardando paciente",
+  aguardando_profissional: "Aguardando profissional",
+  finalizado: "Finalizado",
+};
 const fmtDate = (iso) => (iso ? format(parseISO(iso), "dd/MM/yyyy HH:mm", { locale: ptBR }) : "—");
 const fmtDur = (s) => {
   const min = Math.floor((s || 0) / 60);
@@ -111,7 +117,7 @@ export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
   if (!data) return <p className="text-sm text-muted-foreground py-8 text-center">Carregando timeline...</p>;
   if (data.forbidden) return <p className="text-sm text-muted-foreground py-8 text-center">Você não tem permissão.</p>;
 
-  const { sessions = [], legacy_records = [], counts = {} } = data;
+  const { sessions = [], legacy_records = [], counts = {}, patient_documents = [], clinical_events = [] } = data;
 
   // ⭐ Lote 4 / Fase C (C2): filtros + carregamento em partes (client-side)
   const professionals = Array.from(new Set(sessions.map((s) => s.professional_name).filter(Boolean)));
@@ -181,6 +187,57 @@ export default function PatientClinicalTimeline({ patientId, focusSessionId }) {
         <StatCard label="Em andamento" value={counts.em_andamento} icon={Clock} tone="warning" />
         <StatCard label="Registros legado" value={counts.legacy} icon={FileText} tone="muted" />
       </div>
+
+      {/* F2 (aditivo): documentos do paciente sem vínculo de atendimento */}
+      {patient_documents.length > 0 && (
+        <div className="rounded-2xl border border-border bg-card p-4" data-testid="timeline-patient-documents">
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2 font-semibold flex items-center gap-1.5">
+            <PenLine className="h-3.5 w-3.5" /> Documentos do paciente
+          </div>
+          <ul className="space-y-1 text-[12px]">
+            {patient_documents.map((d) => (
+              <li key={d.document_id} className="flex justify-between items-center border-b border-dashed border-border py-1.5 gap-2 flex-wrap"
+                data-testid={`patient-doc-item-${d.document_id}`}>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium">{d.template_name}</span>
+                  <span className="text-[10px] text-muted-foreground">{fmtDate(d.created_at)}</span>
+                  {d.signed_patient_at && (
+                    <span className="text-[10px] text-success flex items-center gap-0.5">
+                      <CheckCircle2 className="h-3 w-3" /> Paciente assinou {fmtDate(d.signed_patient_at)}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-[9px] uppercase">{DOC_STATUS_LABEL[d.status] || d.status}</Badge>
+                  {d.pdf_url && (
+                    <a href={`${process.env.REACT_APP_BACKEND_URL}${d.pdf_url}`} target="_blank" rel="noreferrer" className="text-primary hover:underline text-[10px]">Abrir PDF</a>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* F1/F2 (aditivo): eventos clínicos auditáveis */}
+      {clinical_events.length > 0 && (
+        <div className="rounded-2xl border border-border bg-card p-4" data-testid="timeline-clinical-events">
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2 font-semibold flex items-center gap-1.5">
+            <ShieldCheck className="h-3.5 w-3.5" /> Eventos registrados
+          </div>
+          <ul className="space-y-1 text-[12px]">
+            {clinical_events.slice(0, 8).map((ev) => (
+              <li key={ev.event_id} className="flex justify-between items-center gap-2 border-b border-dashed border-border py-1"
+                data-testid={`clinical-event-${ev.event_id}`}>
+                <span>{ev.label}</span>
+                <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                  {ev.user_name ? `${ev.user_name} · ` : ""}{fmtDate(ev.at)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* ⭐ Fase C: filtros do histórico */}
       {sessions.length > 0 && (

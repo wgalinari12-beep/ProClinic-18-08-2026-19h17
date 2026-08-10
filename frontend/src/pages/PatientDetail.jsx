@@ -31,6 +31,7 @@ export default function PatientDetail() {
   const [budgetOpen, setBudgetOpen] = useState(false);
   const [budgetId, setBudgetId] = useState(null);
   const [docGenOpen, setDocGenOpen] = useState(false);
+  const [continueDocId, setContinueDocId] = useState(null); // F2: retomar documento existente
   // ⭐ Fase 4/7 + Lote 4/Fase B (B3): "Histórico" (timeline clínica) é a aba principal.
   // Recepção (sem acesso clínico) mantém a Timeline de agendamentos como aba inicial.
   const [activeTab, setActiveTab] = useState(user?.role === "recepcao" ? "timeline" : "clinica");
@@ -88,7 +89,7 @@ export default function PatientDetail() {
         actions={
           <div className="flex items-center gap-2">
             {canClinical && (
-              <Button variant="outline" size="sm" className="rounded-xl" onClick={() => setDocGenOpen(true)} data-testid="new-document-btn">
+              <Button variant="outline" size="sm" className="rounded-xl" onClick={() => { setContinueDocId(null); setDocGenOpen(true); }} data-testid="new-document-btn">
                 <FileSignature className="h-3.5 w-3.5 mr-1.5" /> Documento
               </Button>
             )}
@@ -277,14 +278,23 @@ export default function PatientDetail() {
                               <Badge variant="outline" className="text-[10px] uppercase">{d.status}</Badge>
                             </td>
                             <td className="px-4 py-3">
-                              {d.pdf_url ? (
-                                <a href={`${process.env.REACT_APP_BACKEND_URL}${d.pdf_url}`} target="_blank" rel="noreferrer"
-                                  className="text-primary hover:underline text-xs inline-flex items-center gap-1">
-                                  PDF <ExternalLink className="h-3 w-3" />
-                                </a>
-                              ) : (
-                                <span className="text-[11px] text-muted-foreground">—</span>
-                              )}
+                              <div className="flex items-center gap-2">
+                                {d.pdf_url ? (
+                                  <a href={`${process.env.REACT_APP_BACKEND_URL}${d.pdf_url}`} target="_blank" rel="noreferrer"
+                                    className="text-primary hover:underline text-xs inline-flex items-center gap-1">
+                                    PDF <ExternalLink className="h-3 w-3" />
+                                  </a>
+                                ) : (
+                                  <span className="text-[11px] text-muted-foreground">—</span>
+                                )}
+                                {d.status !== "finalizado" && (
+                                  <Button variant="outline" size="sm" className="h-7 rounded-lg text-[11px]"
+                                    onClick={() => { setContinueDocId(d.document_id); setDocGenOpen(true); }}
+                                    data-testid={`continue-doc-${d.document_id}`}>
+                                    Continuar
+                                  </Button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -327,10 +337,12 @@ export default function PatientDetail() {
         onOpenChange={(o) => {
           setDocGenOpen(o);
           if (!o) {
+            setContinueDocId(null);
             api.get(`/documents`, { params: { patient_id: id } }).then((r) => setSignedDocs(r.data)).catch(() => {});
           }
         }}
         patientId={id}
+        documentId={continueDocId}
       />
     </div>
   );

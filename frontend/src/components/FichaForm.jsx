@@ -65,15 +65,15 @@ export default function FichaForm({ module, schema, patientId, onSaved, onAiSumm
     })();
   }, [patientId, module]);
 
-  // Autosave answers
+  // Autosave answers (F1: NUNCA envia `photos` — fotos são geridas por operações atômicas)
   useEffect(() => {
     if (!patientId) return;
-    if (Object.keys(answers).length === 0 && photos.length === 0) return;
+    if (Object.keys(answers).length === 0) return;
     const t = setTimeout(async () => {
       setSaving(true);
       try {
         const { data } = await api.post("/anamnesis-modules", {
-          patient_id: patientId, module, answers, photos,
+          patient_id: patientId, module, answers,
         });
         setModuleId(data.module_id);
         setSavedAt(new Date());
@@ -83,7 +83,44 @@ export default function FichaForm({ module, schema, patientId, onSaved, onAiSumm
     }, 900);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [answers, photos]);
+  }, [answers]);
+
+  // F1: garante módulo existente antes de vincular fotos
+  const ensureModuleId = async () => {
+    if (moduleId) return moduleId;
+    const { data } = await api.post("/anamnesis-modules", {
+      patient_id: patientId, module, answers, photos: [],
+    });
+    setModuleId(data.module_id);
+    return data.module_id;
+  };
+
+  const addPhotos = async (urls) => {
+    try {
+      const id = await ensureModuleId();
+      let last = null;
+      for (const url of urls) {
+        const { data } = await api.post(`/anamnesis-modules/${id}/photos`, { url });
+        last = data;
+      }
+      if (last?.photos) setPhotos(last.photos);
+      setSavedAt(new Date());
+    } catch {
+      toast.error("Falha ao vincular foto à ficha");
+    }
+  };
+
+  const removePhoto = async (url) => {
+    if (!url) return;
+    try {
+      const id = await ensureModuleId();
+      const { data } = await api.delete(`/anamnesis-modules/${id}/photos`, { data: { url } });
+      if (data?.photos) setPhotos(data.photos);
+      toast.success("Foto removida");
+    } catch {
+      toast.error("Falha ao remover foto");
+    }
+  };
 
   const setField = (k, v) => setAnswers((a) => ({ ...a, [k]: v }));
 
@@ -292,7 +329,8 @@ export default function FichaForm({ module, schema, patientId, onSaved, onAiSumm
         </div>
         <PhotoUploader
           value={photos}
-          onChange={setPhotos}
+          onAdd={addPhotos}
+          onRemove={removePhoto}
           testid={`ficha-${module}-photos`}
         />
       </div>

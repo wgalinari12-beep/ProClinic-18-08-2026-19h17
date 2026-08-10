@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import DocumentTemplateEditor from "@/components/DocumentTemplateEditor";
+import DocumentGenerator from "@/components/DocumentGenerator";
 import { Plus, FileText, Library, History, ExternalLink, Trash2, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { format, parseISO } from "date-fns";
@@ -28,6 +29,7 @@ export default function Documentos() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [contDoc, setContDoc] = useState(null); // F2: {docId, patientId} — retomar documento
 
   const loadAll = async () => {
     setLoading(true);
@@ -156,13 +158,22 @@ export default function Documentos() {
                           <Badge className={`${STATUS_LABEL[d.status]?.cls} border-0 text-[10px]`}>{STATUS_LABEL[d.status]?.label || d.status}</Badge>
                         </td>
                         <td className="px-4 py-3">
-                          {d.pdf_url && (
-                            <a href={`${process.env.REACT_APP_BACKEND_URL}${d.pdf_url}`} target="_blank" rel="noreferrer"
-                              className="text-primary hover:underline text-xs inline-flex items-center gap-1"
-                              data-testid={`doc-pdf-${d.document_id}`}>
-                              PDF <ExternalLink className="h-3 w-3" />
-                            </a>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {d.pdf_url && (
+                              <a href={`${process.env.REACT_APP_BACKEND_URL}${d.pdf_url}`} target="_blank" rel="noreferrer"
+                                className="text-primary hover:underline text-xs inline-flex items-center gap-1"
+                                data-testid={`doc-pdf-${d.document_id}`}>
+                                PDF <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
+                            {d.status !== "finalizado" && (
+                              <Button variant="outline" size="sm" className="h-7 rounded-lg text-[11px]"
+                                onClick={() => setContDoc({ docId: d.document_id, patientId: d.patient_id })}
+                                data-testid={`continue-doc-${d.document_id}`}>
+                                Continuar
+                              </Button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -188,6 +199,14 @@ export default function Documentos() {
           <DocumentTemplateEditor templateId={editingId} onSaved={() => { /* keep open for further edits */ }} />
         </DialogContent>
       </Dialog>
+
+      {/* F2: retomar documento não finalizado */}
+      <DocumentGenerator
+        open={!!contDoc}
+        onOpenChange={(o) => { if (!o) { setContDoc(null); loadAll(); } }}
+        patientId={contDoc?.patientId}
+        documentId={contDoc?.docId}
+      />
     </div>
   );
 }

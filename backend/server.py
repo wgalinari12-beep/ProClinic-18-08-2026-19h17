@@ -2005,7 +2005,11 @@ async def upload_file(
     if ".." in file.filename or "/" in file.filename:
         raise HTTPException(status_code=400, detail="Nome de arquivo inválido")
     path = f"{APP_NAME}/{user['clinic_id']}/{user['user_id']}/{uuid.uuid4()}.{ext}"
-    result = put_object(path, raw, content_type)
+    try:
+        result = put_object(path, raw, content_type)
+    except Exception as e:
+        _photo_logger.error("event=storage_error source=desktop clinic=%s err=%s", user["clinic_id"], repr(e)[:200])
+        raise HTTPException(status_code=502, detail="Falha no armazenamento do arquivo")
     file_id = f"file_{uuid.uuid4().hex[:12]}"
     sig = make_file_signature(file_id, user["clinic_id"])
     doc = {
@@ -2075,6 +2079,33 @@ async def serve_file(path: str, request: Request, sig: Optional[str] = Query(Non
 
 
 # ============================================================
+# Clinical events (auditoria de eventos exibidos na timeline)
+# ============================================================
+_photo_logger = logging.getLogger("proclinic.photos")
+_events_logger = logging.getLogger("proclinic.events")
+
+
+async def _log_clinical_event(
+    clinic_id: str, patient_id: Optional[str], event_type: str, label: str,
+    user: Optional[dict] = None, meta: Optional[dict] = None,
+):
+    try:
+        await db.clinical_events.insert_one({
+            "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+            "clinic_id": clinic_id,
+            "patient_id": patient_id,
+            "type": event_type,
+            "label": label,
+            "user_id": (user or {}).get("user_id"),
+            "user_name": (user or {}).get("name"),
+            "meta": meta or {},
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        _events_logger.exception("clinical_event_failed type=%s clinic=%s", event_type, clinic_id)
+
+
+# ============================================================
 # Premium Anamnesis (multi-module)
 # ============================================================
 class AnamnesisModuleIn(BaseModel):
@@ -2123,15 +2154,110 @@ async def save_anamnesis_module(data: AnamnesisModuleIn, user: dict = Depends(ge
     if existing:
         doc["module_id"] = existing["module_id"]
         doc["created_at"] = existing.get("created_at", doc["updated_at"])
+        # F1: fotos são gerenciadas SOMENTE por operações atômicas ($addToSet/$pull).
+        # O autosave nunca sobrescreve o array — elimina a race condition mobile × desktop.
+        doc.pop("photos", None)
         await db.anamnesis_modules.update_one(
             {"module_id": existing["module_id"]}, {"$set": doc}
         )
+        doc["photos"] = existing.get("photos") or []
     else:
         doc["module_id"] = f"anm_{uuid.uuid4().hex[:12]}"
         doc["created_at"] = doc["updated_at"]
+        doc["photos"] = doc.get("photos") or []
+        doc["photos_meta"] = []
         await db.anamnesis_modules.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+
+# ---------- F1: operações atômicas de fotos do módulo de anamnese ----------
+class ModulePhotoIn(BaseModel):
+    url: str
+
+
+def _module_photo_query(module_id: str, user: dict) -> Dict[str, Any]:
+    q: Dict[str, Any] = {"module_id": module_id, "clinic_id": user["clinic_id"]}
+    if user.get("role") == "profissional":
+        q["created_by"] = user["user_id"]
+    return q
+
+
+async def _validate_photo_url(url: str, clinic_id: str) -> bool:
+    """URL deve ser um arquivo real da clínica (evita injeção de URLs externas)."""
+    if not url or not isinstance(url, str) or not url.startswith("/api/files/"):
+        return False
+    storage_path = url.split("/api/files/", 1)[1].split("?", 1)[0]
+    rec = await db.files.find_one(
+        {"storage_path": storage_path, "clinic_id": clinic_id, "is_deleted": False},
+        {"_id": 0, "file_id": 1},
+    )
+    return bool(rec)
+
+
+async def _normalize_photos_field(module_id: str):
+    """Garantia: photos sempre array (módulos antigos podem ter null)."""
+    await db.anamnesis_modules.update_one(
+        {"module_id": module_id, "photos": {"$not": {"$type": "array"}}},
+        {"$set": {"photos": []}},
+    )
+
+
+@api_router.post("/anamnesis-modules/{module_id}/photos")
+async def add_module_photo(module_id: str, data: ModulePhotoIn, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    mod = await db.anamnesis_modules.find_one(_module_photo_query(module_id, user), {"_id": 0})
+    if not mod:
+        _photo_logger.warning("event=photo_module_not_found module_id=%s user=%s", module_id, user.get("user_id"))
+        raise HTTPException(status_code=404, detail="Módulo de ficha não encontrado")
+    if not await _validate_photo_url(data.url, user["clinic_id"]):
+        _photo_logger.warning("event=photo_invalid_url module_id=%s user=%s url=%s", module_id, user.get("user_id"), data.url[:120])
+        raise HTTPException(status_code=400, detail="URL de foto inválida ou arquivo inexistente")
+    if data.url in (mod.get("photos") or []):
+        _photo_logger.info("event=photo_duplicate_skipped module_id=%s user=%s", module_id, user.get("user_id"))
+        return {"photos": mod.get("photos") or [], "duplicate": True}
+    await _normalize_photos_field(module_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.anamnesis_modules.update_one(
+        {"module_id": module_id, "photos": {"$ne": data.url}},
+        {"$addToSet": {"photos": data.url},
+         "$push": {"photos_meta": {
+             "url": data.url, "uploaded_at": now_iso,
+             "uploaded_by": user["user_id"], "uploaded_by_name": user.get("name"),
+             "source": "desktop",
+         }},
+         "$set": {"updated_at": now_iso}},
+    )
+    _photo_logger.info("event=photo_added module_id=%s user=%s source=desktop", module_id, user.get("user_id"))
+    updated = await db.anamnesis_modules.find_one({"module_id": module_id}, {"_id": 0, "photos": 1})
+    return {"photos": (updated or {}).get("photos") or []}
+
+
+@api_router.delete("/anamnesis-modules/{module_id}/photos")
+async def remove_module_photo(module_id: str, data: ModulePhotoIn, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    mod = await db.anamnesis_modules.find_one(_module_photo_query(module_id, user), {"_id": 0})
+    if not mod:
+        _photo_logger.warning("event=photo_module_not_found module_id=%s user=%s", module_id, user.get("user_id"))
+        raise HTTPException(status_code=404, detail="Módulo de ficha não encontrado")
+    if data.url not in (mod.get("photos") or []):
+        _photo_logger.warning("event=photo_not_found module_id=%s user=%s", module_id, user.get("user_id"))
+        return {"photos": mod.get("photos") or [], "removed": False}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.anamnesis_modules.update_one(
+        {"module_id": module_id},
+        {"$pull": {"photos": data.url, "photos_meta": {"url": data.url}},
+         "$set": {"updated_at": now_iso}},
+    )
+    _photo_logger.info("event=photo_removed module_id=%s user=%s", module_id, user.get("user_id"))
+    await _log_clinical_event(
+        user["clinic_id"], mod.get("patient_id"), "photo_removed",
+        f"Foto removida da avaliação ({mod.get('module', 'ficha')})",
+        user=user,
+        meta={"module_id": module_id, "module": mod.get("module"), "url": data.url},
+    )
+    updated = await db.anamnesis_modules.find_one({"module_id": module_id}, {"_id": 0, "photos": 1})
+    return {"photos": (updated or {}).get("photos") or [], "removed": True}
 
 
 # ============================================================
@@ -3323,10 +3449,26 @@ async def _build_patient_timeline(patient_id: str, user: dict) -> Dict[str, Any]
         {"_id": 0},
     ).sort("created_at", -1).to_list(200)
 
+    # F2 (aditivo): documentos do paciente SEM vínculo de atendimento — antes invisíveis
+    patient_documents = await db.documents.find(
+        {"clinic_id": user["clinic_id"], "patient_id": patient_id,
+         "$or": [{"appointment_id": None}, {"appointment_id": {"$exists": False}}]},
+        {"_id": 0, "document_id": 1, "template_name": 1, "status": 1, "pdf_url": 1,
+         "created_at": 1, "signed_patient_at": 1, "signed_professional_at": 1,
+         "professional_name": 1},
+    ).sort("created_at", -1).to_list(100)
+
+    # F1/F2 (aditivo): eventos clínicos auditáveis (foto removida, doc assinado/finalizado)
+    clinical_events = await db.clinical_events.find(
+        {"clinic_id": user["clinic_id"], "patient_id": patient_id}, {"_id": 0}
+    ).sort("at", -1).to_list(100)
+
     return {
         "patient": {"patient_id": p["patient_id"], "name": p.get("name"), "cpf": p.get("cpf")},
         "sessions": timeline,
         "legacy_records": legacy_records,
+        "patient_documents": patient_documents,
+        "clinical_events": clinical_events,
         "counts": {
             "sessions": len(timeline),
             "concluidas": sum(1 for s in timeline if s["status"] == "concluido"),
@@ -4036,8 +4178,20 @@ async def mobile_upload_upload(
     content_type = file.content_type or _MIME_BY_EXT.get(ext, "application/octet-stream")
     if content_type not in _ALLOWED_UPLOAD_MIMES:
         raise HTTPException(status_code=400, detail=f"Tipo não permitido: {content_type}")
+    # F1: módulo de anamnese deve existir ANTES de gravar (evita sucesso falso)
+    if p["ctx_type"] == "anamnesis":
+        module_doc = await db.anamnesis_modules.find_one(
+            {"module_id": p["ctx_id"], "clinic_id": clinic_id}, {"_id": 0, "patient_id": 1, "module": 1}
+        )
+        if not module_doc:
+            _photo_logger.warning("event=photo_module_not_found source=mobile_qr module_id=%s clinic=%s", p["ctx_id"], clinic_id)
+            raise HTTPException(status_code=404, detail="Ficha não encontrada para vincular a foto")
     path = f"{APP_NAME}/{clinic_id}/{user_id}/{uuid.uuid4()}.{ext}"
-    result = put_object(path, raw, content_type)
+    try:
+        result = put_object(path, raw, content_type)
+    except Exception as e:
+        _photo_logger.error("event=storage_error source=mobile_qr clinic=%s err=%s", clinic_id, repr(e)[:200])
+        raise HTTPException(status_code=502, detail="Falha no armazenamento do arquivo")
     file_id = f"file_{uuid.uuid4().hex[:12]}"
     sig = make_file_signature(file_id, clinic_id)
     doc = {
@@ -4057,12 +4211,24 @@ async def mobile_upload_upload(
     }
     await db.files.insert_one(doc)
     public_url = f"/api/files/{result['path']}?sig={sig}"
-    # If anamnesis context, append URL to module.photos
+    # F1: vínculo atômico — $addToSet (idempotente) + metadados de auditoria.
+    # Guarda "photos $ne url" evita reenvio duplicado (requisito 4).
     if p["ctx_type"] == "anamnesis":
-        await db.anamnesis_modules.update_one(
-            {"module_id": p["ctx_id"]},
-            {"$push": {"photos": public_url}},
+        await _normalize_photos_field(p["ctx_id"])
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = await db.anamnesis_modules.update_one(
+            {"module_id": p["ctx_id"], "clinic_id": clinic_id, "photos": {"$ne": public_url}},
+            {"$addToSet": {"photos": public_url},
+             "$push": {"photos_meta": {
+                 "url": public_url, "uploaded_at": now_iso,
+                 "uploaded_by": user_id, "source": "mobile_qr",
+             }},
+             "$set": {"updated_at": now_iso}},
         )
+        if res.matched_count == 0:
+            _photo_logger.info("event=photo_duplicate_skipped source=mobile_qr module_id=%s", p["ctx_id"])
+        else:
+            _photo_logger.info("event=photo_added source=mobile_qr module_id=%s file_id=%s", p["ctx_id"], file_id)
     return {"ok": True, "url": public_url}
 
 
@@ -4502,6 +4668,7 @@ async def sign_patient(document_id: str, data: DocumentSignIn, request: Request,
         "signed_patient_at": datetime.now(timezone.utc).isoformat(),
         "patient_sign_device": data.device or "desktop",
         "patient_sign_ip": request.client.host if request.client else None,
+        "patient_sign_user_agent": (request.headers.get("user-agent") or "")[:300],
         "status": "aguardando_profissional" if not doc.get("professional_signature") else doc["status"],
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -4524,6 +4691,7 @@ async def sign_professional(document_id: str, data: DocumentSignIn, request: Req
         "signed_professional_at": datetime.now(timezone.utc).isoformat(),
         "professional_sign_device": data.device or "desktop",
         "professional_sign_ip": request.client.host if request.client else None,
+        "professional_sign_user_agent": (request.headers.get("user-agent") or "")[:300],
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.documents.update_one({"document_id": document_id}, {"$set": upd})
@@ -4643,6 +4811,13 @@ async def finalize_document(document_id: str, request: Request, user: dict = Dep
     )
     await _audit_log("finalized", user=user, document_id=document_id,
                      ip=request.client.host if request.client else None)
+    # F2: evento visível na timeline do prontuário
+    await _log_clinical_event(
+        user["clinic_id"], doc.get("patient_id"), "document_finalized",
+        f"Documento finalizado: {doc.get('template_name', 'Documento')}",
+        user=user,
+        meta={"document_id": document_id, "appointment_id": doc.get("appointment_id"), "pdf_url": file_url},
+    )
     updated = await db.documents.find_one({"document_id": document_id}, {"_id": 0})
     return updated
 
@@ -4685,11 +4860,17 @@ async def public_sign_patient(token: str, payload: Dict[str, Any], request: Requ
         raise HTTPException(status_code=400, detail="Token inválido")
     if not payload.get("signature"):
         raise HTTPException(status_code=400, detail="Assinatura requerida")
+    doc = await db.documents.find_one({"document_id": p["doc"], "clinic_id": p["clinic"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
     upd = {
         "patient_signature": payload["signature"],
         "signed_patient_at": datetime.now(timezone.utc).isoformat(),
         "patient_sign_device": payload.get("device") or "mobile-qr",
         "patient_sign_ip": request.client.host if request.client else None,
+        "patient_sign_user_agent": (request.headers.get("user-agent") or "")[:300],
+        # F2: status avança igual ao fluxo autenticado (antes ficava preso em "rascunho")
+        "status": "aguardando_profissional" if not doc.get("professional_signature") else doc.get("status"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.documents.update_one({"document_id": p["doc"], "clinic_id": p["clinic"]}, {"$set": upd})
@@ -4699,9 +4880,17 @@ async def public_sign_patient(token: str, payload: Dict[str, Any], request: Requ
         "document_id": p["doc"], "clinic_id": p["clinic"],
         "user_id": None, "user_role": "patient",
         "ip": request.client.host if request.client else None,
-        "extra": {"device": payload.get("device") or "mobile-qr"},
+        "extra": {"device": payload.get("device") or "mobile-qr",
+                  "user_agent": (request.headers.get("user-agent") or "")[:300]},
         "at": datetime.now(timezone.utc).isoformat(),
     })
+    # F2: evento visível na timeline do prontuário
+    await _log_clinical_event(
+        p["clinic"], doc.get("patient_id"), "document_signed_patient",
+        f"Paciente assinou documento: {doc.get('template_name', 'Documento')}",
+        meta={"document_id": p["doc"], "appointment_id": doc.get("appointment_id"),
+              "device": payload.get("device") or "mobile-qr"},
+    )
     return {"ok": True}
 
 
@@ -5773,3 +5962,4 @@ async def on_startup():
 @app.on_event("shutdown")
 async def shutdown_db():
     client.close()
+

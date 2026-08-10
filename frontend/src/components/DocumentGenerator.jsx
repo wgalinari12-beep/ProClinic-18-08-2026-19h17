@@ -30,10 +30,11 @@ const STATUS_LABEL = {
  *  appointmentId? (optional)
  *  procedure? (default procedure name)
  *  procedureValue? (default value)
+ *  documentId? (optional — F2: reabre documento existente em modo "Continuar")
  *  onFinalized?: (doc) => void
  */
 export default function DocumentGenerator({
-  open, onOpenChange, patientId, appointmentId, procedure, procedureValue, onFinalized,
+  open, onOpenChange, patientId, appointmentId, procedure, procedureValue, documentId, onFinalized,
 }) {
   const [step, setStep] = useState("pick"); // pick | review | finalized
   const [templates, setTemplates] = useState([]);
@@ -51,12 +52,46 @@ export default function DocumentGenerator({
     setProSig(null);
     setQrUrl(null);
     (async () => {
+      // F2: modo "Continuar" — carrega documento existente em vez de criar novo
+      if (documentId) {
+        try {
+          const { data } = await api.get(`/documents/${documentId}`);
+          setDoc(data);
+          setStep(data.status === "finalizado" ? "finalized" : "review");
+        } catch {
+          toast.error("Erro ao carregar documento");
+        }
+        return;
+      }
       try {
         const { data } = await api.get("/document-templates", { params: { active_only: true } });
         setTemplates(data);
       } catch { /* ignore */ }
     })();
-  }, [open]);
+  }, [open, documentId]);
+
+  // F2: polling de assinatura (3s) — desktop detecta assinatura feita pelo celular.
+  // Encerra ao: detectar assinatura, fechar o dialog, sair do step review,
+  // ou após 30 min (timeout de segurança contra polling infinito).
+  useEffect(() => {
+    if (!open || step !== "review" || !doc?.document_id || doc?.patient_signature) return;
+    const startedAt = Date.now();
+    const t = setInterval(async () => {
+      if (Date.now() - startedAt > 30 * 60 * 1000) {
+        clearInterval(t);
+        return;
+      }
+      try {
+        const { data } = await api.get(`/documents/${doc.document_id}`);
+        if (data?.patient_signature) {
+          setDoc(data);
+          toast.success("Assinatura do paciente recebida pelo celular");
+        }
+      } catch { /* ignore */ }
+    }, 3000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, step, doc?.document_id, doc?.patient_signature]);
 
   const pickTemplate = async (tpl) => {
     setBusy(true);
@@ -159,9 +194,11 @@ export default function DocumentGenerator({
 
         {step === "review" && doc && (
           <div className="space-y-4" data-testid="dg-review">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setStep("pick")} className="h-8 text-xs -ml-2" data-testid="dg-back">
-              <ChevronLeft className="h-3.5 w-3.5 mr-1" /> Trocar modelo
-            </Button>
+            {!documentId && (
+              <Button type="button" variant="ghost" size="sm" onClick={() => setStep("pick")} className="h-8 text-xs -ml-2" data-testid="dg-back">
+                <ChevronLeft className="h-3.5 w-3.5 mr-1" /> Trocar modelo
+              </Button>
+            )}
 
             <Badge className={`${STATUS_LABEL[doc.status]?.cls} border-0`} data-testid="dg-status">
               {STATUS_LABEL[doc.status]?.label || doc.status}

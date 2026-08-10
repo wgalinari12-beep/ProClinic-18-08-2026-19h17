@@ -14,7 +14,7 @@ import Lightbox from "@/components/Lightbox";
  *  onChange: (urls) => void
  *  label, accent, testid
  */
-export default function PhotoUploader({ value = [], onChange, label, accent = "default", testid }) {
+export default function PhotoUploader({ value = [], onChange, onAdd, onRemove, label, accent = "default", testid }) {
   const inputRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [lb, setLb] = useState({ open: false, index: 0 });
@@ -32,7 +32,12 @@ export default function PhotoUploader({ value = [], onChange, label, accent = "d
         });
         uploaded.push(data.url);
       }
-      onChange?.([...(value || []), ...uploaded]);
+      // F1: modo atômico — o pai vincula cada foto via endpoint dedicado
+      if (onAdd) {
+        await onAdd(uploaded);
+      } else {
+        onChange?.([...(value || []), ...uploaded]);
+      }
       toast.success(`${uploaded.length} foto(s) enviada(s)`);
     } catch (e) {
       toast.error("Falha no upload");
@@ -43,6 +48,11 @@ export default function PhotoUploader({ value = [], onChange, label, accent = "d
   };
 
   const removeAt = (i) => {
+    // F1: modo atômico — remoção via $pull no servidor
+    if (onRemove) {
+      onRemove((value || [])[i]);
+      return;
+    }
     const next = [...(value || [])];
     next.splice(i, 1);
     onChange?.(next);

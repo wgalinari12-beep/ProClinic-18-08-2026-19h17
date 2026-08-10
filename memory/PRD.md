@@ -11,20 +11,29 @@ React (CRA) + FastAPI + MongoDB + Supervisor. Object Storage Emergent. JWT auth.
 - `EMERGENT_LLM_KEY` preenchida no backend/.env (10/06/2026) — necessária para Object Storage.
 
 ## Trabalho desta sessão (10/06/2026)
-### AUDITORIA QR Code — Assinaturas e Fotos (SOMENTE LEITURA, nenhum código alterado)
+### AUDITORIA QR Code — Assinaturas e Fotos (concluída)
 - Relatório completo: `/app/memory/AUDITORIA_QRCODE_ASSINATURAS_FOTOS.md`
-- **Causa raiz FOTOS (crítico, provado):** autosave do `FichaForm.jsx` envia array `photos` local e `save_anamnesis_module` (server.py:2100) faz `$set` total → APAGA fotos enviadas via QR mobile (`$push`). Perda real de dados reproduzida em teste controlado (1 foto → 0).
-- **Causa raiz ASSINATURAS (crítico, provado):** assinatura via QR É salva em `db.documents.patient_signature`, mas: DocumentGenerator sem polling (estado stale), status não avança no endpoint público, sem UI para retomar rascunho, PDF nunca gerado, docs sem `appointment_id` invisíveis na timeline.
-- **Latente:** URLs assinadas de arquivos expiram em 365 dias sem renovação/fallback (401 confirmado com sig expirado).
-- **Lacuna:** fotos antes/depois do atendimento e TCLE do atendimento NÃO possuem fluxo QR (só a Ficha/anamnese tem QR de fotos; só documentos têm QR de assinatura).
-- Dados de teste criados: `anm_df6777e6f4af`, `tpl_82631c0096f9`, `doc_3c8d1cfb59f5`, `file_f11df160ed6d`.
+- Plano técnico aprovado: `/app/memory/PLANO_CORRECAO_F1_F2.md`
+
+### CORREÇÃO F1 + F2 IMPLEMENTADA E TESTADA (10/06/2026) ✅
+**F1 — Fotos QR (perda de dados eliminada):**
+- `server.py`: `save_anamnesis_module` não grava mais `photos` no update (`doc.pop`); novos endpoints `POST/DELETE /api/anamnesis-modules/{module_id}/photos` ($addToSet/$pull atômicos, com `photos_meta` {url, uploaded_at, uploaded_by, source}); `mobile_upload_upload` usa $addToSet + valida módulo antes (404) + logs estruturados (`proclinic.photos`: photo_added/removed/not_found/duplicate_skipped/storage_error); validação de URL contra db.files (anti-injeção).
+- `FichaForm.jsx`: autosave sem `photos` (deps só [answers]); handlers addPhotos/removePhoto/ensureModuleId.
+- `PhotoUploader.jsx`: props opcionais onAdd/onRemove (AttendanceDialog intocado).
+**F2 — Assinaturas QR (fluxo completo):**
+- `public_sign_patient`: status → aguardando_profissional + patient_sign_user_agent + clinical_event "Paciente assinou documento"; sign-patient/professional autenticados gravam user_agent; `finalize_document` → clinical_event "Documento finalizado".
+- `DocumentGenerator.jsx`: polling 3s (GET /documents/{id}) com timeout 30min, prop `documentId` (modo Continuar), toast ao detectar assinatura.
+- Botão "Continuar" em `PatientDetail.jsx` e `Documentos.jsx` para docs não finalizados.
+- Timeline: campos aditivos `patient_documents` + `clinical_events` (coleção nova `clinical_events`), renderizados em `PatientClinicalTimeline.jsx`.
+**Testes:** backend 10/10 PASS (`/app/backend/tests/test_f1_f2_qr_photos_signatures.py`) + E2E frontend completo pelo testing agent (`/app/test_reports/iteration_20.json`) — zero issues. Cenário crítico TF2 (autosave não apaga foto mobile) e TS10 (doc recuperável horas depois) validados.
+**Incidente durante implementação:** edição paralela corrompeu server.py (duplicação do bloco App setup + perda de um bloco); corrigido — lição: não fazer search_replace paralelos no mesmo arquivo grande.
 
 ## Backlog priorizado
-- **P0 — F1 Fotos:** endpoints atômicos add/remove foto de anamnese + FichaForm parar de enviar `photos` no autosave (AGUARDANDO APROVAÇÃO DO USUÁRIO)
-- **P0 — F2 Assinaturas:** polling no DocumentGenerator, status no endpoint público, ação "Continuar" em rascunhos, `appointmentId` no PatientDetail, timeline por patient_id (AGUARDANDO APROVAÇÃO)
 - **P1 — F3:** QR para fotos antes/depois do atendimento (context_type="session" já existe no backend, órfão)
-- **P2 — F4:** renovação de URLs assinadas expiradas
+- **P2 — F4:** renovação de URLs assinadas expiradas (validade atual: 365 dias, sem renovação)
+- **P2:** regenerar public_token expirado (180 dias) ao usar "Continuar"
 - Chaves pendentes: ASAAS_API_KEY, RESEND_API_KEY, SENDER_EMAIL (vazias)
+- Observação: AnamnesisModuleIn Literal não inclui "injetaveis"/"epilacao" (módulos existem na UI) — possível 422 pré-existente, fora do escopo atual
 
 ## Credenciais
 Ver `/app/memory/test_credentials.md` (admin@proclinic.com/admin123, superadmin@proclinic.com/super123)
