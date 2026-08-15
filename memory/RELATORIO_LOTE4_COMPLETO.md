@@ -160,4 +160,4 @@ Verificação: backend validado via curl (200/content-type corretos); frontend v
 
 Verificação: backend validado via curl + geração real de PDF (200, dados de teste temporários criados e removidos); frontend validado via screenshots. Testing agent NÃO executado (conforme instrução do usuário).
 
-Nota técnica: o `REACT_APP_BACKEND_URL` correto do ambiente é `https://sync-clinic-repo.preview.emergentagent.com` (o `.env` foi atualizado pela plataforma). Frontend e backend compartilham o mesmo host em produção, portanto não há problema de CORS no uso real.
+Nota técnica: o `REACT_APP_BACKEND_URL` correto do ambiente é `https://proclinic-deploy.preview.emergentagent.com` (o `.env` foi atualizado pela plataforma). Frontend e backend compartilham o mesmo host em produção, portanto não há problema de CORS no uso real.

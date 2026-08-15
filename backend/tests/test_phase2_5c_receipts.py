@@ -20,7 +20,7 @@ import time
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://beauty-ops-platform.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://proclinic-deploy.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
 
 CREDS = {
