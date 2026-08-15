@@ -2054,7 +2054,24 @@ async def serve_file(path: str, request: Request, sig: Optional[str] = Query(Non
                     data, ct = get_object(path)
                     return Response(content=data, media_type=rec.get("content_type", ct))
         except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Link de imagem expirado")
+            # sig expirado: arquivo de acervo clínico nunca deve sumir.
+            # Revalida pela chave persistida (storage_path) mantendo isolamento por clínica.
+            # A assinatura continua sendo verificada (verify_exp=False só ignora a expiração),
+            # então tokens adulterados seguem rejeitados via InvalidTokenError.
+            try:
+                p = jwt.decode(sig, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                               options={"verify_exp": False})
+                if p.get("scope") == "file_sig":
+                    rec = await db.files.find_one(
+                        {"storage_path": path, "is_deleted": False, "clinic_id": p["clinic"]},
+                        {"_id": 0},
+                    )
+                    if rec:
+                        data, ct = get_object(path)
+                        return Response(content=data, media_type=rec.get("content_type", ct))
+            except jwt.InvalidTokenError:
+                pass
+            # sem registro legítimo: segue para o fallback de auth de usuário abaixo
         except jwt.InvalidTokenError:
             pass
     # 2. Fallback to user auth
