@@ -14,6 +14,7 @@ import {
 import { toast } from "sonner";
 import PhotoUploader from "@/components/PhotoUploader";
 import MobileUploadQR from "@/components/MobileUploadQR";
+import { generateDossieWithToast } from "@/lib/dossie";
 import SignaturePad from "@/components/SignaturePad";
 import FichaForm from "@/components/FichaForm";
 import BudgetEditor from "@/components/BudgetEditor";
@@ -70,6 +71,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   const [linkedBudget, setLinkedBudget] = useState(null);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [docGenOpen, setDocGenOpen] = useState(false);
+  const [dossieBusy, setDossieBusy] = useState(false);
   // ⭐ Fase 6: travamento de atendimento finalizado + reabertura com auditoria
   const [locked, setLocked] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
@@ -664,6 +666,9 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                   </div>
                   <Button type="button" size="sm" variant="outline" onClick={() => setReopenOpen(true)} className="rounded-lg h-8 text-xs" data-testid="reopen-attendance-btn">
                     <Unlock className="h-3.5 w-3.5 mr-1" /> Reabrir atendimento
+                  </Button>
+                  <Button type="button" size="sm" onClick={() => generateDossieWithToast(session.session_id, setDossieBusy)} disabled={dossieBusy} className="rounded-lg h-8 text-xs" data-testid="generate-dossie-btn">
+                    {dossieBusy ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <FileText className="h-3.5 w-3.5 mr-1" />} Gerar Dossiê Clínico
                   </Button>
                 </div>
               )}

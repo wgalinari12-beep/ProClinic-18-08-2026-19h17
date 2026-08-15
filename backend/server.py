@@ -3891,6 +3891,430 @@ async def patient_ficha_pdf(patient_id: str, user: dict = Depends(get_current_us
 
 
 
+# ============================================================
+# Dossiê Clínico Premium (PDF jurídico consolidado por atendimento)
+# Aditivo. Fonte: snapshot congelado em medical_records. Não altera nada existente.
+# ============================================================
+
+# Réplicas backend do mapa facial de injetáveis (espelham frontend body-regions.js)
+_FACIAL_SILHOUETTE_FRONTAL = "M50 12 C 68 12 78 32 78 55 C 78 78 65 92 50 92 C 35 92 22 78 22 55 C 22 32 32 12 50 12 Z"
+_FACIAL_REGIONS_FRONTAL = [
+    {"id": "frontal", "label": "Testa (m. frontal)", "cx": 50, "cy": 22, "rx": 18, "ry": 6},
+    {"id": "glabela", "label": "Glabela", "cx": 50, "cy": 32, "rx": 4, "ry": 2.5},
+    {"id": "supracilio_esq", "label": "Supracílio esq.", "cx": 42, "cy": 30, "rx": 5, "ry": 1.6},
+    {"id": "supracilio_dir", "label": "Supracílio dir.", "cx": 58, "cy": 30, "rx": 5, "ry": 1.6},
+    {"id": "temporal_esq", "label": "Temporal esq.", "cx": 30, "cy": 32, "rx": 4, "ry": 5},
+    {"id": "temporal_dir", "label": "Temporal dir.", "cx": 70, "cy": 32, "rx": 4, "ry": 5},
+    {"id": "periorbital_esq", "label": "Periorbital esq. (pés de galinha)", "cx": 38, "cy": 38, "rx": 5, "ry": 2},
+    {"id": "periorbital_dir", "label": "Periorbital dir. (pés de galinha)", "cx": 62, "cy": 38, "rx": 5, "ry": 2},
+    {"id": "olheira_esq", "label": "Olheira / vale de lágrima esq.", "cx": 42, "cy": 43, "rx": 4, "ry": 1.5},
+    {"id": "olheira_dir", "label": "Olheira / vale de lágrima dir.", "cx": 58, "cy": 43, "rx": 4, "ry": 1.5},
+    {"id": "malar_esq", "label": "Malar esq. / zigomático", "cx": 36, "cy": 49, "rx": 5, "ry": 3.5},
+    {"id": "malar_dir", "label": "Malar dir. / zigomático", "cx": 64, "cy": 49, "rx": 5, "ry": 3.5},
+    {"id": "nasal", "label": "Nariz (dorso)", "cx": 50, "cy": 48, "rx": 2.5, "ry": 6},
+    {"id": "sulco_nasogeniano_esq", "label": "Sulco nasogeniano esq.", "cx": 43, "cy": 60, "rx": 2, "ry": 4},
+    {"id": "sulco_nasogeniano_dir", "label": "Sulco nasogeniano dir.", "cx": 57, "cy": 60, "rx": 2, "ry": 4},
+    {"id": "labios", "label": "Lábios", "cx": 50, "cy": 66, "rx": 6, "ry": 2},
+    {"id": "codigo_barras", "label": "Perioral (código de barras)", "cx": 50, "cy": 63, "rx": 6, "ry": 1.2},
+    {"id": "marionete_esq", "label": "Marionete esq.", "cx": 44, "cy": 71, "rx": 2, "ry": 3},
+    {"id": "marionete_dir", "label": "Marionete dir.", "cx": 56, "cy": 71, "rx": 2, "ry": 3},
+    {"id": "mento", "label": "Mento", "cx": 50, "cy": 78, "rx": 4, "ry": 3},
+    {"id": "mandibula_esq", "label": "Mandíbula esq. (ângulo)", "cx": 32, "cy": 72, "rx": 3, "ry": 4},
+    {"id": "mandibula_dir", "label": "Mandíbula dir. (ângulo)", "cx": 68, "cy": 72, "rx": 3, "ry": 4},
+    {"id": "papada", "label": "Papada / submento", "cx": 50, "cy": 88, "rx": 8, "ry": 2.5},
+]
+_FACIAL_REGIONS_LATERAL_D = [
+    {"id": "temporal_lat_d", "label": "Temporal (D)", "cx": 40, "cy": 30, "rx": 6, "ry": 4},
+    {"id": "malar_lat_d", "label": "Malar (D)", "cx": 45, "cy": 48, "rx": 5, "ry": 3},
+    {"id": "mandibula_lat_d", "label": "Mandíbula (D)", "cx": 55, "cy": 70, "rx": 6, "ry": 3},
+    {"id": "papada_lat_d", "label": "Papada (D)", "cx": 65, "cy": 82, "rx": 5, "ry": 2.5},
+    {"id": "orelha_lat_d", "label": "Área pré-auricular (D)", "cx": 72, "cy": 45, "rx": 3, "ry": 4},
+]
+_FACIAL_REGIONS_LATERAL_E = [
+    {**r, "id": r["id"].replace("_d", "_e"), "label": r["label"].replace("(D)", "(E)"), "cx": 100 - r["cx"]}
+    for r in _FACIAL_REGIONS_LATERAL_D
+]
+_FACIAL_REGION_LABELS = {
+    r["id"]: r["label"]
+    for r in (_FACIAL_REGIONS_FRONTAL + _FACIAL_REGIONS_LATERAL_D + _FACIAL_REGIONS_LATERAL_E)
+}
+
+
+def _dossie_face_map_datauri(marked_ids, primary: str = "#B76E79", highlight: str = "#d6336c"):
+    """Rasteriza o mapa facial (frontal) com regiões marcadas em PNG base64. None em falha."""
+    try:
+        import base64 as _b64
+        marked = set(marked_ids or [])
+        parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="340" height="340">']
+        parts.append(f'<path d="{_FACIAL_SILHOUETTE_FRONTAL}" fill="#faf6f3" stroke="{primary}" stroke-width="0.8"/>')
+        for r in _FACIAL_REGIONS_FRONTAL:
+            on = r["id"] in marked
+            fill = highlight if on else "#ffffff"
+            op = "0.78" if on else "0.12"
+            parts.append(
+                '<ellipse cx="%s" cy="%s" rx="%s" ry="%s" fill="%s" opacity="%s" stroke="%s" stroke-width="0.3"/>'
+                % (r["cx"], r["cy"], r["rx"], r["ry"], fill, op, primary)
+            )
+        parts.append("</svg>")
+        svg = "".join(parts)
+        from svglib.svglib import svg2rlg
+        from reportlab.graphics import renderPM
+        drawing = svg2rlg(io.BytesIO(svg.encode("utf-8")))
+        png = renderPM.drawToString(drawing, fmt="PNG")
+        return "data:image/png;base64," + _b64.b64encode(png).decode("ascii")
+    except Exception:
+        logger.warning("dossie_face_map_render_failed")
+        return None
+
+
+async def _dossie_img_data_uri(url, clinic_id: str):
+    """Converte imagem (URL /api/files ou base64 cru de assinatura) em data URI base64. None em falha."""
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        import base64 as _b64
+        if url.startswith("data:"):
+            return url
+        if "/api/files/" in url:
+            storage_path = url.split("/api/files/", 1)[1].split("?", 1)[0]
+            rec = await db.files.find_one(
+                {"storage_path": storage_path, "clinic_id": clinic_id, "is_deleted": False},
+                {"_id": 0, "content_type": 1},
+            )
+            if not rec:
+                return None
+            data, ct = get_object(storage_path)
+            return "data:%s;base64,%s" % (rec.get("content_type") or ct or "image/jpeg", _b64.b64encode(data).decode("ascii"))
+        if len(url) > 100:  # assinatura em base64 cru
+            return "data:image/png;base64," + url
+    except Exception:
+        logger.warning("dossie_img_data_uri_failed")
+    return None
+
+
+@api_router.get("/attendance/{session_id}/dossie-pdf")
+async def attendance_dossie_pdf(session_id: str, user: dict = Depends(get_current_user)):
+    """Dossiê Clínico Premium (sob demanda): PDF consolidado a partir do snapshot congelado (medical_records)."""
+    import hashlib
+    forbid_recepcao_clinical(user)
+    clinic_id = user["clinic_id"]
+    sess = await db.attendance_sessions.find_one({"session_id": session_id, "clinic_id": clinic_id}, {"_id": 0})
+    if not sess:
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    if user.get("role") == "profissional" and sess.get("started_by") not in (None, user["user_id"]):
+        raise HTTPException(status_code=403, detail="Sem acesso a esta sessão")
+    rec = await db.medical_records.find_one({"session_id": session_id, "clinic_id": clinic_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=400, detail="Dossiê disponível apenas para atendimento concluído")
+
+    patient = await db.patients.find_one({"patient_id": sess["patient_id"], "clinic_id": clinic_id}, {"_id": 0}) or {}
+    clinic = await db.clinics.find_one({"clinic_id": clinic_id}, {"_id": 0}) or {}
+    primary = clinic.get("primary_color") or "#B76E79"
+    frontend_url = os.environ.get("FRONTEND_URL", "")
+
+    def _d(iso):
+        if not iso:
+            return "—"
+        try:
+            return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            return str(iso)[:16]
+
+    def _age(b):
+        try:
+            bd = datetime.fromisoformat(str(b).replace("Z", "+00:00"))
+            return str((datetime.now(timezone.utc).date() - bd.date()).days // 365)
+        except Exception:
+            return "—"
+
+    async def _gallery(urls, limit=12):
+        cells = []
+        for u in (urls or [])[:limit]:
+            raw = u.get("url") if isinstance(u, dict) else u
+            src = await _dossie_img_data_uri(raw, clinic_id)
+            if src:
+                cells.append(f"<div class='ph'><img src='{src}'/></div>")
+        return ("<div class='gallery'>" + "".join(cells) + "</div>") if cells else "<div class='muted'>Sem imagens registradas.</div>"
+
+    def _txt_block(title, val):
+        if not val:
+            return ""
+        return f"<div class='sec'><h2>{_html_escape(title)}</h2><div class='ft'>{_html_escape(val)}</div></div>"
+
+    ficha = rec.get("ficha_snapshot") or {}
+
+    # 4-8 módulos genéricos organizados + galeria por módulo
+    module_labels = [
+        ("geral", "4. Anamnese Premium"), ("facial", "5. Ficha Facial"),
+        ("corporal", "6. Ficha Corporal"), ("capilar", "7. Ficha Capilar"),
+        ("epilacao", "8. Ficha Epilação"),
+    ]
+    modules_html = ""
+    for key, lbl in module_labels:
+        m = ficha.get(key)
+        if not m:
+            continue
+        tbl = _render_module_html(lbl, m.get("answers") or {})
+        gal = await _gallery(m.get("photos")) if m.get("photos") else ""
+        gal_html = f"<h3>Registros fotográficos</h3>{gal}" if m.get("photos") else ""
+        if tbl or gal_html:
+            modules_html += f"<div class='sec'>{tbl or ''}{gal_html}</div>"
+
+    # 9. Injetáveis (mapa visual + tabela de aplicações + detalhes)
+    inj_html = ""
+    inj = ficha.get("injetaveis")
+    if inj:
+        ia = inj.get("answers") or {}
+        marked = ia.get("regioes_selecionadas") or []
+        map_src = _dossie_face_map_datauri(marked, primary)
+        if map_src:
+            map_block = f"<img class='facemap' src='{map_src}'/>"
+        else:
+            fb = ", ".join(_html_escape(_FACIAL_REGION_LABELS.get(x, x)) for x in marked) or "—"
+            map_block = f"<div class='muted'>Mapa visual indisponível. Regiões marcadas: {fb}</div>"
+        legend = "".join(f"<span class='chip'>{_html_escape(_FACIAL_REGION_LABELS.get(x, x))}</span>" for x in marked)
+        legend_html = legend or "<span class='muted'>Nenhuma região marcada</span>"
+        rows = ""
+        for a in (ia.get("aplicacoes") or []):
+            rows += "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
+                _html_escape(a.get("produto")), _html_escape(a.get("marca")), _html_escape(a.get("regiao")),
+                _html_escape(a.get("qty_ui")), _html_escape(a.get("qty_ml")), _html_escape(a.get("obs")),
+            )
+        apps_table = (
+            "<table class='tbl'><tr><th>Produto</th><th>Marca/Lote</th><th>Região</th><th>UI</th><th>ml</th><th>Obs.</th></tr>"
+            + rows + "</table>"
+        ) if rows else ""
+        other = _render_module_html(
+            "Injetáveis — detalhes",
+            {k: v for k, v in ia.items() if k not in ("regioes_selecionadas", "aplicacoes") and not str(k).startswith("_")},
+        )
+        inj_html = (
+            "<div class='sec'><h2>9. Ficha Injetáveis / Harmonização Facial</h2>"
+            f"<div class='facemap-wrap'>{map_block}"
+            f"<div class='legend'>{legend_html}</div></div>"
+            f"{apps_table}{other}</div>"
+        )
+
+    # 10. Evolução / 11. Prescrições
+    evolucao_html = (
+        _txt_block("10. Evolução Clínica", rec.get("evolution"))
+        + _txt_block("Observações / Contraindicações / Resumo", rec.get("observations"))
+        + _txt_block("Protocolos", rec.get("protocols"))
+    )
+    prescricoes_html = _txt_block("11. Prescrições", rec.get("prescriptions"))
+
+    # 12. Fotos antes/depois
+    before = await _gallery(rec.get("photos_before"))
+    after = await _gallery(rec.get("photos_after"))
+    fotos_html = (
+        "<div class='sec'><h2>12. Registros Fotográficos</h2>"
+        f"<h3>Antes</h3>{before}<h3>Depois</h3>{after}</div>"
+    )
+
+    # Assinaturas (forense)
+    async def _sig_html(img, meta, label):
+        src = await _dossie_img_data_uri(img, clinic_id) if img else None
+        img_tag = f"<img class='sig-img' src='{src}'/>" if src else "<div class='muted'>Sem assinatura registrada</div>"
+        meta = meta or {}
+        forensic = f"Assinado em {_html_escape(_d(meta.get('signed_at')))} por {_html_escape(meta.get('signed_by_name') or '—')}"
+        ip = f" · IP {_html_escape(meta.get('ip'))}" if meta.get("ip") else ""
+        h = f"<div class='hash'>SHA-256: {_html_escape(meta.get('sha256') or '—')}</div>"
+        return f"<div class='sigbox'><div class='sig-label'>{label}</div>{img_tag}<div class='sig-meta'>{forensic}{ip}</div>{h}</div>"
+
+    sig_pat = await _sig_html(rec.get("consent_signature"), rec.get("consent_signature_meta"), "Paciente — Consentimento (TCLE)")
+    sig_pro = await _sig_html(rec.get("signature"), rec.get("evolution_signature_meta"), "Profissional — Evolução")
+    assinaturas_html = f"<div class='sec'><h2>Assinaturas</h2><div class='sigs'>{sig_pat}{sig_pro}</div></div>"
+
+    # Documentos relacionados (listagem + QR de validação, sem merge)
+    doc_cards = ""
+    if sess.get("appointment_id"):
+        docs = await db.documents.find(
+            {"clinic_id": clinic_id, "appointment_id": sess["appointment_id"]}, {"_id": 0}
+        ).to_list(20)
+        for dcm in docs:
+            token = dcm.get("public_token") or ""
+            val_url = f"{frontend_url}/documento/{dcm.get('document_id')}/validar" + (f"?t={token}" if token else "")
+            try:
+                qr = _generate_qr_data_url(val_url)
+                qr_img = f"<img class='qr' src='{qr}'/>"
+            except Exception:
+                qr_img = ""
+            doc_cards += (
+                "<div class='doccard'><div class='dc-info'>"
+                f"<b>{_html_escape(dcm.get('template_name') or 'Documento')}</b><br/>"
+                f"<span class='muted'>TCLE/Jurídico · {_html_escape(dcm.get('status') or '')} · {_html_escape((dcm.get('created_at') or '')[:10])}</span>"
+                f"</div>{qr_img}</div>"
+            )
+    entries = await db.financial_entries.find(
+        {"clinic_id": clinic_id, "session_id": session_id}, {"_id": 0}
+    ).to_list(50)
+    for e in entries:
+        if e.get("receipt_number"):
+            doc_cards += (
+                "<div class='doccard'><div class='dc-info'>"
+                f"<b>Recibo {_html_escape(e.get('receipt_number'))}</b><br/>"
+                f"<span class='muted'>Financeiro · R$ {_html_escape(e.get('amount'))}</span></div></div>"
+            )
+    if sess.get("appointment_id"):
+        budget = await db.budgets.find_one(
+            {"clinic_id": clinic_id, "appointment_id": sess["appointment_id"]}, {"_id": 0}
+        )
+        if budget:
+            doc_cards += (
+                "<div class='doccard'><div class='dc-info'>"
+                f"<b>Orçamento</b><br/><span class='muted'>Total R$ {_html_escape(budget.get('total'))}</span></div></div>"
+            )
+    docs_html = (
+        "<div class='sec'><h2>Documentos Relacionados</h2>"
+        + (f"<div class='doccards'>{doc_cards}</div>" if doc_cards else "<div class='muted'>Nenhum documento vinculado.</div>")
+        + "</div>"
+    )
+
+    # Timeline (eventos desta sessão)
+    events = await db.clinical_events.find(
+        {"clinic_id": clinic_id, "patient_id": sess["patient_id"], "meta.session_id": session_id}, {"_id": 0}
+    ).sort("at", 1).to_list(100)
+    tl_rows = f"<li><b>{_html_escape(_d(sess.get('started_at')))}</b> — Início do atendimento</li>"
+    for ev in events:
+        tl_rows += f"<li><b>{_html_escape(_d(ev.get('at')))}</b> — {_html_escape(ev.get('label') or ev.get('type'))}</li>"
+    if sess.get("finalized_at"):
+        tl_rows += f"<li><b>{_html_escape(_d(sess.get('finalized_at')))}</b> — Atendimento finalizado</li>"
+    timeline_html = f"<div class='sec'><h2>Linha do Tempo</h2><ul class='tl'>{tl_rows}</ul></div>"
+
+    # Capa + identificação + dados do atendimento
+    logo_src = await _dossie_img_data_uri(clinic.get("logo_url") or clinic.get("logo"), clinic_id)
+    logo_html = f"<img class='logo' src='{logo_src}'/>" if logo_src else ""
+    dur = rec.get("duration_seconds") or sess.get("duration_seconds") or 0
+    dur_str = f"{dur // 3600:02d}:{(dur % 3600) // 60:02d}:{dur % 60:02d}"
+    session_number = rec.get("session_number") or "—"
+    clinic_name = clinic.get("name") or "ProClinic"
+    clinic_cnpj = clinic.get("cnpj") or ""
+
+    capa_html = (
+        "<div class='capa'>"
+        f"{logo_html}"
+        f"<div class='capa-clinic'>{_html_escape(clinic_name)}</div>"
+        "<div class='capa-title'>Dossiê Clínico Premium</div>"
+        f"<div class='capa-patient'>{_html_escape(patient.get('name') or '—')}</div>"
+        "<table class='capa-meta'>"
+        f"<tr><td>Nº do atendimento</td><td>{_html_escape(session_number)}</td></tr>"
+        f"<tr><td>Data</td><td>{_html_escape(_d(sess.get('finalized_at') or sess.get('started_at')))}</td></tr>"
+        f"<tr><td>Profissional responsável</td><td>{_html_escape(rec.get('professional_name') or sess.get('professional_name') or '—')}</td></tr>"
+        f"<tr><td>Procedimento</td><td>{_html_escape(rec.get('procedure') or sess.get('procedure') or '—')}</td></tr>"
+        "</table></div>"
+    )
+
+    ident_html = (
+        "<div class='sec'><h2>2. Identificação do Paciente</h2><table class='tbl'>"
+        f"<tr><td class='k'>Nome</td><td class='v'>{_html_escape(patient.get('name') or '—')}</td></tr>"
+        f"<tr><td class='k'>CPF</td><td class='v'>{_html_escape(patient.get('cpf') or '—')}</td></tr>"
+        f"<tr><td class='k'>Data de nascimento</td><td class='v'>{_html_escape(patient.get('birth_date') or '—')}</td></tr>"
+        f"<tr><td class='k'>Idade</td><td class='v'>{_age(patient.get('birth_date'))} anos</td></tr>"
+        f"<tr><td class='k'>Telefone</td><td class='v'>{_html_escape(patient.get('phone') or '—')}</td></tr>"
+        f"<tr><td class='k'>E-mail</td><td class='v'>{_html_escape(patient.get('email') or '—')}</td></tr>"
+        f"<tr><td class='k'>Endereço</td><td class='v'>{_html_escape(patient.get('address') or '—')}</td></tr>"
+        "</table></div>"
+    )
+
+    atend_html = (
+        "<div class='sec'><h2>3. Dados do Atendimento</h2><table class='tbl'>"
+        f"<tr><td class='k'>Número da sessão</td><td class='v'>{_html_escape(session_number)}</td></tr>"
+        f"<tr><td class='k'>Procedimento</td><td class='v'>{_html_escape(rec.get('procedure') or '—')}</td></tr>"
+        f"<tr><td class='k'>Profissional</td><td class='v'>{_html_escape(rec.get('professional_name') or '—')}</td></tr>"
+        f"<tr><td class='k'>Data</td><td class='v'>{_html_escape(_d(sess.get('finalized_at') or sess.get('started_at')))}</td></tr>"
+        f"<tr><td class='k'>Duração</td><td class='v'>{dur_str}</td></tr>"
+        f"<tr><td class='k'>Status</td><td class='v'>{_html_escape(sess.get('status') or '—')}</td></tr>"
+        "</table></div>"
+    )
+
+    body = (
+        capa_html
+        + "<div class='page'>"
+        + ident_html + atend_html + modules_html + inj_html
+        + evolucao_html + prescricoes_html + fotos_html
+        + assinaturas_html + docs_html + timeline_html
+        + "</div>"
+    )
+
+    content_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    now_br = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M")
+    footer = (
+        f"<div class='footer'>Dossiê gerado por ProClinic · {_html_escape(clinic_name)}"
+        f"{(' · CNPJ ' + _html_escape(clinic_cnpj)) if clinic_cnpj else ''} · {now_br}<br/>"
+        f"Hash de integridade (conteúdo) SHA-256: {content_sha}</div>"
+    )
+
+    css = """
+    <style>
+      @page { size: A4; margin: 16mm 14mm; }
+      body { font-family: Helvetica, Arial, sans-serif; color: #1e1e1e; font-size: 10pt; }
+      h2 { font-family: Georgia, serif; font-size: 14pt; color: %(primary)s; border-bottom: 1px solid #e6ded7; padding-bottom: 4pt; margin: 16pt 0 8pt; }
+      h3 { font-family: Georgia, serif; font-size: 11pt; color: #555; margin: 10pt 0 5pt; }
+      .sec { margin-bottom: 12pt; }
+      .capa { text-align: center; padding-top: 60pt; page-break-after: always; }
+      .capa .logo { max-height: 90pt; margin-bottom: 16pt; }
+      .capa-clinic { font-family: Georgia, serif; font-size: 20pt; color: %(primary)s; }
+      .capa-title { font-size: 13pt; letter-spacing: 2pt; text-transform: uppercase; color: #888; margin: 8pt 0 26pt; }
+      .capa-patient { font-family: Georgia, serif; font-size: 18pt; margin-bottom: 22pt; }
+      .capa-meta { margin: 0 auto; width: 70%%; border-collapse: collapse; }
+      .capa-meta td { padding: 6pt 8pt; border-bottom: 1px solid #eee; font-size: 10pt; text-align: left; }
+      .capa-meta td:first-child { color: #888; width: 45%%; }
+      table.tbl { width: 100%%; border-collapse: collapse; margin-bottom: 8pt; }
+      table.tbl td, table.tbl th { padding: 4pt 6pt; border-bottom: 1px solid #f0eae5; vertical-align: top; font-size: 9.5pt; text-align: left; }
+      table.tbl th { color: %(primary)s; border-bottom: 1px solid #e6ded7; }
+      table.tbl td.k { width: 32%%; color: #888; }
+      .ft { white-space: pre-wrap; font-size: 9.5pt; line-height: 1.4; }
+      .gallery .ph { display: inline-block; width: 30%%; margin: 1%%; }
+      .gallery .ph img { width: 100%%; height: auto; border: 1px solid #e6ded7; }
+      .facemap-wrap { text-align: center; margin-bottom: 8pt; }
+      .facemap { width: 240pt; height: auto; border: 1px solid #e6ded7; border-radius: 6pt; }
+      .legend { margin-top: 6pt; }
+      .chip { display: inline-block; background: %(primary)s22; color: %(primary)s; padding: 2pt 6pt; margin: 2pt; border-radius: 8pt; font-size: 8pt; }
+      .sigs { }
+      .sigbox { display: inline-block; width: 46%%; margin: 1%%; border: 1px solid #eadfd8; border-radius: 6pt; padding: 8pt; vertical-align: top; }
+      .sig-label { font-size: 9pt; color: %(primary)s; font-weight: bold; margin-bottom: 4pt; }
+      .sig-img { max-height: 60pt; max-width: 100%%; border-bottom: 1px solid #eee; }
+      .sig-meta { font-size: 8pt; color: #555; margin-top: 4pt; }
+      .hash { font-family: monospace; font-size: 7pt; color: #999; word-break: break-all; margin-top: 2pt; }
+      .doccard { display: inline-block; width: 46%%; margin: 1%%; border: 1px solid #eadfd8; border-radius: 6pt; padding: 8pt; vertical-align: top; }
+      .doccard .qr { width: 48pt; height: 48pt; float: right; }
+      .muted { color: #999; font-size: 9pt; }
+      ul.tl { list-style: none; padding-left: 0; font-size: 9pt; }
+      ul.tl li { padding: 3pt 0; border-bottom: 1px dashed #eee; }
+      .footer { position: fixed; bottom: 6mm; left: 0; right: 0; text-align: center; font-size: 7pt; color: #999; }
+    </style>
+    """ % {"primary": primary}
+
+    full_html = "<!DOCTYPE html><html><head><meta charset='utf-8'>" + css + "</head><body>" + body + footer + "</body></html>"
+
+    buf = io.BytesIO()
+    pisa.CreatePDF(src=full_html, dest=buf, encoding="utf-8")
+    pdf_bytes = buf.getvalue()
+    file_sha = hashlib.sha256(pdf_bytes).hexdigest()
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    rel_path = f"{APP_NAME}/{clinic_id}/dossies/{session_id}-{ts}.pdf"
+    stored = put_object(rel_path, pdf_bytes, "application/pdf")
+    file_id = f"file_{uuid.uuid4().hex[:12]}"
+    sig = make_file_signature(file_id, clinic_id)
+    await db.files.insert_one({
+        "file_id": file_id, "storage_path": stored["path"],
+        "original_filename": f"dossie-{session_number}.pdf", "content_type": "application/pdf",
+        "size": stored.get("size", len(pdf_bytes)), "clinic_id": clinic_id,
+        "kind": "dossie_pdf", "patient_id": sess["patient_id"], "session_id": session_id,
+        "sha256": file_sha, "content_sha256": content_sha,
+        "is_deleted": False, "signature": sig, "uploaded_by": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    url = f"/api/files/{stored['path']}?sig={sig}"
+    await _log_clinical_event(
+        clinic_id, sess["patient_id"], "dossie_generated", "Dossiê Clínico Premium Gerado",
+        user=user,
+        meta={"session_id": session_id, "file_sha256": file_sha, "content_sha256": content_sha, "url": url},
+    )
+    return {"file_id": file_id, "url": url, "sha256": file_sha, "content_sha256": content_sha, "size": len(pdf_bytes)}
+
+
 @api_router.post("/messages")
 async def send_message(data: MessageIn, user: dict = Depends(get_current_user)):
     """Enqueue a message. Provider integration plugged in later (Evolution API)."""
