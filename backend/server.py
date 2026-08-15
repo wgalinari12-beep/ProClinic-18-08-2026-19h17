@@ -4246,6 +4246,28 @@ async def mobile_upload_upload(
             _photo_logger.info("event=photo_duplicate_skipped source=mobile_qr module_id=%s", p["ctx_id"])
         else:
             _photo_logger.info("event=photo_added source=mobile_qr module_id=%s file_id=%s", p["ctx_id"], file_id)
+    elif p["ctx_type"] == "session":
+        # Fotos Antes/Depois via QR: NÃO grava na sessão (persistência é do autosave do frontend).
+        # Apenas registra evento de auditoria na timeline (aditivo). ctx_id = "{session_id}:{phase}".
+        ctx_id = p["ctx_id"]
+        session_id, sep, phase = ctx_id.rpartition(":")
+        if sep and phase in ("before", "after"):
+            try:
+                sess = await db.attendance_sessions.find_one(
+                    {"session_id": session_id, "clinic_id": clinic_id},
+                    {"_id": 0, "patient_id": 1},
+                )
+                if sess:
+                    u = await db.users.find_one({"user_id": user_id}, {"_id": 0, "name": 1})
+                    label = "Foto Antes enviada via QR Code" if phase == "before" else "Foto Depois enviada via QR Code"
+                    await _log_clinical_event(
+                        clinic_id, sess.get("patient_id"), "photo_qr_session", label,
+                        user={"user_id": user_id, "name": (u or {}).get("name")},
+                        meta={"origin": "qr_mobile", "session_id": session_id, "phase": phase, "url": public_url},
+                    )
+                    _photo_logger.info("event=photo_added source=mobile_qr_session session_id=%s phase=%s file_id=%s", session_id, phase, file_id)
+            except Exception:
+                _photo_logger.exception("event=session_qr_event_failed session_id=%s phase=%s", session_id, phase)
     return {"ok": True, "url": public_url}
 
 

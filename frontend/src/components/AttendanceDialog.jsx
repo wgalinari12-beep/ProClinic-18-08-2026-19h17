@@ -9,10 +9,11 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
   Clock, AlertCircle, Sparkles, FileSignature, CheckCircle2,
-  ClipboardList, FileText, Pill, Loader2, Wallet, Lock, Unlock,
+  ClipboardList, FileText, Pill, Loader2, Wallet, Lock, Unlock, Smartphone,
 } from "lucide-react";
 import { toast } from "sonner";
 import PhotoUploader from "@/components/PhotoUploader";
+import MobileUploadQR from "@/components/MobileUploadQR";
 import SignaturePad from "@/components/SignaturePad";
 import FichaForm from "@/components/FichaForm";
 import BudgetEditor from "@/components/BudgetEditor";
@@ -177,6 +178,17 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
   };
 
   const setSessionField = (k, v) => autosave({ [k]: v });
+
+  // QR Antes/Depois (aditivo): captura via celular reutilizando MobileUploadQR.
+  // contextId = "{session_id}:before" | "{session_id}:after" (sem novo campo/coleção).
+  const [qr, setQr] = useState({ open: false, phase: null });
+  const mergePhotos = (phase, urls) => {
+    if (!urls?.length) return;
+    const key = phase === "before" ? "photos_before" : "photos_after";
+    const existing = session?.[key] || [];
+    const union = Array.from(new Set([...existing, ...urls]));
+    if (union.length !== existing.length) setSessionField(key, union);
+  };
 
   // ⭐ Fase 6: reabertura de atendimento finalizado (justificativa obrigatória)
   const confirmReopen = async () => {
@@ -762,16 +774,40 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
                     placeholder="Ex: Botox Allergan 50U — Lote 12345" className="h-11 rounded-xl" data-testid="att-products" />
 
                   <div className="pt-4 border-t border-border space-y-4">
-                    <PhotoUploader
-                      label="Antes (procedimento)" testid="photos-before-uploader"
-                      value={session.photos_before || []}
-                      onChange={(urls) => setSessionField("photos_before", urls)}
-                    />
-                    <PhotoUploader
-                      label="Depois (procedimento)" accent="primary" testid="photos-after-uploader"
-                      value={session.photos_after || []}
-                      onChange={(urls) => setSessionField("photos_after", urls)}
-                    />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Antes (procedimento)</span>
+                        {!locked && (
+                          <Button type="button" size="sm" variant="outline"
+                            onClick={() => setQr({ open: true, phase: "before" })}
+                            className="rounded-lg h-8 text-xs" data-testid="photos-before-qr-btn">
+                            <Smartphone className="h-3.5 w-3.5 mr-1.5" /> Capturar pelo Celular
+                          </Button>
+                        )}
+                      </div>
+                      <PhotoUploader
+                        testid="photos-before-uploader"
+                        value={session.photos_before || []}
+                        onChange={(urls) => setSessionField("photos_before", urls)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] uppercase tracking-wider text-primary">Depois (procedimento)</span>
+                        {!locked && (
+                          <Button type="button" size="sm" variant="outline"
+                            onClick={() => setQr({ open: true, phase: "after" })}
+                            className="rounded-lg h-8 text-xs" data-testid="photos-after-qr-btn">
+                            <Smartphone className="h-3.5 w-3.5 mr-1.5" /> Capturar pelo Celular
+                          </Button>
+                        )}
+                      </div>
+                      <PhotoUploader
+                        accent="primary" testid="photos-after-uploader"
+                        value={session.photos_after || []}
+                        onChange={(urls) => setSessionField("photos_after", urls)}
+                      />
+                    </div>
                   </div>
                 </TabsContent>
 
@@ -911,6 +947,15 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
           appointmentId={appointment?.appointment_id}
           procedure={session?.procedure || appointment?.procedure}
           procedureValue={appointment?.price}
+        />
+
+        <MobileUploadQR
+          open={qr.open}
+          onOpenChange={(v) => setQr((q) => ({ ...q, open: v }))}
+          contextType="session"
+          contextId={session?.session_id && qr.phase ? `${session.session_id}:${qr.phase}` : undefined}
+          contextLabel={qr.phase === "before" ? "Fotos Antes" : "Fotos Depois"}
+          onUploaded={(urls) => mergePhotos(qr.phase, urls)}
         />
       </DialogContent>
     </Dialog>
