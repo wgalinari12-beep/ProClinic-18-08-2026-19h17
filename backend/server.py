@@ -6357,9 +6357,12 @@ async def super_admin_email_logs(user: dict = Depends(get_current_user), limit: 
 # ============================================================
 app.include_router(api_router)
 
+_frontend_origin = os.environ.get("FRONTEND_URL", "").rstrip("/")
+_cors_origins = [_frontend_origin] if _frontend_origin else []
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
