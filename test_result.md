@@ -231,3 +231,82 @@ agent_communication:
       15. ✅ Validate financial_entry created on first finalization
       
       ALL FEATURES WORKING CORRECTLY. No critical issues found.
+
+  - task: "CORS restrito ao FRONTEND_URL + regex Emergent (login não conectava ao servidor)"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+          agent: "main"
+          comment: |
+            User reportou 'Não foi possível conectar ao servidor' no login após restringir CORS.
+            Causa: allow_origins passou a aceitar só FRONTEND_URL; o app é servido por múltiplos
+            hostnames Emergent (preview/deploy), gerando requisição cross-origin bloqueada.
+            Fix: allow_origins=[FRONTEND_URL + CORS_ORIGINS] mais allow_origin_regex
+            r"https://.*\.emergentagent\.com", mantendo allow_credentials=True.
+            Verificado via curl: origem proclinic-deploy-1 e 61ae7f48 -> 200 com ACAO; evil.example.com -> 400.
+            Precisa validação end-to-end do login pelo testing agent.
+        -working: true
+          agent: "testing"
+          comment: |
+            ✅ TESTED & WORKING - CORS fix verified successfully via end-to-end login flow.
+            Test Results:
+            1. Login page loaded without CORS errors
+            2. Pre-filled credentials verified (admin@proclinic.com / admin123)
+            3. Login API call succeeded: POST /api/auth/login returned 200
+            4. Successfully redirected to /dashboard after login
+            5. Authenticated API calls working correctly:
+               - GET /api/subscriptions/me - 200
+               - GET /api/finance/summary - 200
+               - GET /api/dashboard/stats - 200
+            6. NO CORS errors detected in browser console
+            7. NO "Não foi possível conectar ao servidor" error displayed
+            8. Dashboard loaded with data successfully
+            
+            The CORS configuration (allow_origins + allow_origin_regex for *.emergentagent.com)
+            is working perfectly. Login bug is FIXED.
+
+metadata:
+  created_by: "main_agent"
+  version: "1.1"
+  test_sequence: 2
+  run_ui: true
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+    -agent: "main"
+    -message: |
+      Corrigi o CORS que quebrou o login. Por favor validar o fluxo de LOGIN end-to-end no
+      frontend (preview URL), com credenciais admin@proclinic.com / admin123.
+      Cenário: abrir a página de login, preencher email+senha, clicar em 'Entrar' e confirmar
+      que autentica e redireciona para o dashboard SEM o erro 'Não foi possível conectar ao servidor'.
+      Também confirmar que uma chamada autenticada (ex.: /api/auth/me ou dashboard) funciona após login.
+    -agent: "testing"
+    -message: |
+      ✅ CORS LOGIN FIX VERIFIED (end-to-end). Login com admin@proclinic.com/admin123 → 200,
+      redireciona para /dashboard, sem erro 'Não foi possível conectar ao servidor'.
+      Chamadas autenticadas OK: /api/auth/me, /api/subscriptions/me, /api/finance/summary,
+      /api/dashboard/stats → 200. Nenhum erro de CORS no console. Task resolvida (working=true).
+    -agent: "testing"
+    -message: |
+      ✅ LOGIN BUG FIX VERIFIED - All tests passed successfully!
+      
+      Completed comprehensive end-to-end testing of the login flow with the CORS fix.
+      The bug "Não foi possível conectar ao servidor" is completely resolved.
+      
+      Key findings:
+      - Login API call succeeded (200 OK)
+      - No CORS errors in console
+      - Dashboard loaded with authenticated data
+      - All authenticated API endpoints working correctly
+      
+      The CORS configuration is working as intended. Bug fix is complete and verified.

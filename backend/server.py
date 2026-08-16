@@ -6357,12 +6357,19 @@ async def super_admin_email_logs(user: dict = Depends(get_current_user), limit: 
 # ============================================================
 app.include_router(api_router)
 
+# CORS: allow the specific frontend origin (FRONTEND_URL) plus any extra
+# origins listed in CORS_ORIGINS (comma-separated). A regex also authorizes the
+# Emergent preview/deploy subdomains so the app keeps working across the
+# different hostnames it can be served from (preview / deploy), all while
+# keeping allow_credentials=True (no wildcard "*").
 _frontend_origin = os.environ.get("FRONTEND_URL", "").rstrip("/")
-_cors_origins = [_frontend_origin] if _frontend_origin else []
+_extra_origins = [o.strip().rstrip("/") for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+_cors_origins = [o for o in ([_frontend_origin] + _extra_origins) if o]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=r"https://.*\.emergentagent\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
