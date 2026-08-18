@@ -29,6 +29,7 @@ export default function DocumentTemplateEditor({ templateId, onSaved }) {
   const [contentMd, setContentMd] = useState(EMPTY_MD);
   const [active, setActive] = useState(true);
   const [variables, setVariables] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(null);
   const [showPreview, setShowPreview] = useState(true);
@@ -40,6 +41,10 @@ export default function DocumentTemplateEditor({ templateId, onSaved }) {
         const { data } = await api.get("/document-templates/variables");
         setVariables(data.variables || []);
       } catch { /* ignore */ }
+      try {
+        const { data } = await api.get("/document-categories", { params: { active_only: true } });
+        setCategories(data || []);
+      } catch { /* ignore */ }
       if (templateId) {
         try {
           const { data } = await api.get(`/document-templates`);
@@ -48,7 +53,6 @@ export default function DocumentTemplateEditor({ templateId, onSaved }) {
         } catch { /* ignore */ }
       }
     })();
-    // eslint-disable-next-line
   }, [templateId]);
 
   const hydrate = (t) => {
@@ -109,7 +113,12 @@ export default function DocumentTemplateEditor({ templateId, onSaved }) {
           <select value={category} onChange={(e) => setCategory(e.target.value)}
             data-testid="tpl-category"
             className="w-full h-11 rounded-xl border border-border bg-card px-3 text-sm">
-            {CATEGORIES.map((c) => (<option key={c.value} value={c.value}>{c.label}</option>))}
+            {categories.length === 0 && CATEGORIES.map((c) => (<option key={c.value} value={c.value}>{c.label}</option>))}
+            {/* Preserva valor legado que não exista mais na lista */}
+            {category && !categories.some((c) => c.slug === category) && categories.length > 0 && (
+              <option value={category}>{category} (atual)</option>
+            )}
+            {categories.map((c) => (<option key={c.category_id} value={c.slug}>{c.name}</option>))}
           </select>
         </div>
       </div>

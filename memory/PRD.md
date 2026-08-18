@@ -1,5 +1,15 @@
 # PRD — ProClinic (importado de GitHub)
 
+## Documentos Inteligentes Premium — FASE 1 (18/08/2026) — ADITIVO
+- Backend (server.py): variáveis agrupadas (VARS_GROUPS) + formato duplo PT/EN (regex ampliado) + novas vars (email, idade, sessão, atendimento, financeiro, clínica tel/email, current_datetime, NUMERO_DOCUMENTO). _build_doc_context estendido; create_document busca appointment/medical_records/budget (best-effort, ausência=vazio) e aloca document_number.
+- Contador: coleção document_counters (clinic_id, year) -> _next_document_number => DOC-YYYY-######.
+- Categorias: coleção document_categories (multitenant) + CRUD + seed idempotente (11 padrão) + exclusão protegida (409 se em uso). Editor: dropdown dinâmico (compat com valor legado).
+- Config docs clínica: endpoint DEDICADO GET/PUT /api/clinic/document-settings ($set só de document_header/document_watermark; NÃO usa PUT /clinic). Só persiste+preview (PDF real = Fase 6).
+- Índices: document_categories (clinic_id,slug) unique + (clinic_id,order); document_counters (clinic_id,year) unique.
+- Frontend: páginas DocumentosCategorias (dnd-kit), DocumentosVariaveis (copy PT/EN), DocumentosConfiguracoes (tabs cabeçalho/marca d'água + preview). Componente DocumentosSubNav. Rotas /documentos/{categorias,variaveis,configuracoes} (DenyRoles recepcao).
+- NENHUM teste automatizado executado (diretriz do usuário). Validado por lint + compilação limpa. QR/assinatura/PDF/timeline/dossiê intactos (código não tocado).
+
+
 ## Sessão atual (reimport ProClinic18-08-26) — 18/08/2026
 - Reimport/setup: .env recriados (backend DB_NAME=proclinic_database, JWT_SECRET, EMERGENT_LLM_KEY, FRONTEND_URL preview; frontend REACT_APP_BACKEND_URL preview). System deps pkg-config+libcairo2-dev. Seed admin@proclinic.com/admin123, superadmin/super123. test_credentials.md atualizado.
 - Redesign UX (SEM alterar backend/endpoints/QR/PDF/auditoria): página pública de assinatura `pages/DocumentoPublico.jsx` reescrita (cabeçalho premium, stepper, card identificação, leitura+expandir, área de assinatura premium, overlay processando, tela de sucesso com protocolo — SEM IP). Novo componente `components/SignaturePadPremium.jsx` (Limpar/Refazer/Confirmar, canvas >=240px, feedback em tempo real). SignaturePad interno intocado. Backup em /app/.backups/DocumentoPublico.jsx.bak.

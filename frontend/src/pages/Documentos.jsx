@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import DocumentTemplateEditor from "@/components/DocumentTemplateEditor";
 import DocumentGenerator from "@/components/DocumentGenerator";
+import DocumentosSubNav from "@/components/DocumentosSubNav";
 import { Plus, FileText, Library, History, ExternalLink, Trash2, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { format, parseISO } from "date-fns";
@@ -70,6 +71,8 @@ export default function Documentos() {
           )
         }
       />
+
+      <DocumentosSubNav />
 
       <div className="p-6 sm:p-8 animate-fade-up">
         <Tabs value={tab} onValueChange={setTab}>

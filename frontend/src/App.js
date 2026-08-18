@@ -28,6 +28,9 @@ import OrcamentoPublico from "@/pages/OrcamentoPublico";
 import DocumentoPublico from "@/pages/DocumentoPublico";
 import DocumentoValidacao from "@/pages/DocumentoValidacao";
 import Documentos from "@/pages/Documentos";
+import DocumentosCategorias from "@/pages/DocumentosCategorias";
+import DocumentosVariaveis from "@/pages/DocumentosVariaveis";
+import DocumentosConfiguracoes from "@/pages/DocumentosConfiguracoes";
 import Planos from "@/pages/Planos";
 import Checkout from "@/pages/Checkout";
 import MinhaAssinatura from "@/pages/MinhaAssinatura";
@@ -77,6 +80,9 @@ function AppRouter() {
         <Route path="mensagens" element={<Mensagens />} />
         <Route path="assistente-ia" element={<DenyRoles deny={["recepcao"]}><AIAssistant /></DenyRoles>} />
         <Route path="documentos" element={<DenyRoles deny={["recepcao"]}><Documentos /></DenyRoles>} />
+        <Route path="documentos/categorias" element={<DenyRoles deny={["recepcao"]}><DocumentosCategorias /></DenyRoles>} />
+        <Route path="documentos/variaveis" element={<DenyRoles deny={["recepcao"]}><DocumentosVariaveis /></DenyRoles>} />
+        <Route path="documentos/configuracoes" element={<DenyRoles deny={["recepcao"]}><DocumentosConfiguracoes /></DenyRoles>} />
         <Route path="planos" element={<Planos />} />
         <Route path="checkout/:planKey" element={<Checkout />} />
         <Route path="minha-assinatura" element={<MinhaAssinatura />} />

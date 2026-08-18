@@ -4470,6 +4470,74 @@ async def update_clinic(data: ClinicSettingsIn, user: dict = Depends(get_current
 
 
 # ============================================================
+# ⭐ Fase 1 — Configurações de Documentos da Clínica (cabeçalho + marca d'água)
+# Endpoint DEDICADO: NÃO usa PUT /clinic (evita sobrescrever dados da clínica).
+# Nesta fase apenas PERSISTE + serve para PREVIEW; a renderização em PDF é Fase 6.
+# ============================================================
+class DocumentHeaderConfig(BaseModel):
+    show_logo: bool = True
+    show_legal_name: bool = True
+    show_cnpj: bool = True
+    show_address: bool = True
+    show_contacts: bool = True
+    show_social: bool = False
+    layout: Literal["logo_left", "centered"] = "logo_left"
+
+
+class DocumentWatermarkConfig(BaseModel):
+    enabled: bool = False
+    type: Literal["none", "logo", "clinic_name", "custom_text"] = "none"
+    text: Optional[str] = None
+    opacity: float = Field(default=0.08, ge=0.0, le=1.0)
+    size: Literal["small", "medium", "large"] = "medium"
+    rotation: int = Field(default=-30, ge=-180, le=180)
+    position: Literal["center", "diagonal", "tiled"] = "diagonal"
+
+
+class DocumentSettingsIn(BaseModel):
+    header: DocumentHeaderConfig = DocumentHeaderConfig()
+    watermark: DocumentWatermarkConfig = DocumentWatermarkConfig()
+
+
+_DEFAULT_DOC_SETTINGS = {
+    "header": DocumentHeaderConfig().model_dump(),
+    "watermark": DocumentWatermarkConfig().model_dump(),
+}
+
+
+@api_router.get("/clinic/document-settings")
+async def get_clinic_document_settings(user: dict = Depends(get_current_user)):
+    clinic = await db.clinics.find_one(
+        {"clinic_id": user["clinic_id"]},
+        {"_id": 0, "document_header": 1, "document_watermark": 1},
+    ) or {}
+    return {
+        "header": clinic.get("document_header") or _DEFAULT_DOC_SETTINGS["header"],
+        "watermark": clinic.get("document_watermark") or _DEFAULT_DOC_SETTINGS["watermark"],
+    }
+
+
+@api_router.put("/clinic/document-settings")
+async def update_clinic_document_settings(data: DocumentSettingsIn, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    # $set APENAS destes dois campos — não toca em nenhum outro dado da clínica.
+    await db.clinics.update_one(
+        {"clinic_id": user["clinic_id"]},
+        {"$set": {
+            "document_header": data.header.model_dump(),
+            "document_watermark": data.watermark.model_dump(),
+            "document_settings_updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {
+        "header": data.header.model_dump(),
+        "watermark": data.watermark.model_dump(),
+    }
+
+
+
+# ============================================================
 # Public appointment confirmation (no auth)
 # ============================================================
 def make_confirmation_token(appointment_id: str) -> str:
@@ -4891,13 +4959,57 @@ async def reset_password(user_id: str, payload: Dict[str, str], user: dict = Dep
 # ============================================================
 # Documentos Jurídicos (Fase 2.3A)
 # ============================================================
-VARS_AVAILABLE = [
-    "PACIENTE_NOME", "PACIENTE_CPF", "PACIENTE_RG", "PACIENTE_ENDERECO",
-    "PACIENTE_TELEFONE", "PACIENTE_DATA_NASCIMENTO",
-    "PROFISSIONAL_NOME", "PROFISSIONAL_CPF", "PROFISSIONAL_CONSELHO", "PROFISSIONAL_REGISTRO",
-    "CLINICA_NOME", "CLINICA_CNPJ", "CLINICA_ENDERECO",
-    "DATA_ATUAL", "PROCEDIMENTO", "VALOR_PROCEDIMENTO",
+# ⭐ Fase 1 (Documentos Inteligentes) — variáveis agrupadas + formato duplo PT/EN.
+# Cada variável tem token PT (legado, UPPERCASE) e token EN (novo, lowercase).
+# Ambos resolvem para o MESMO valor (ver _build_doc_context). Nada legado quebra.
+VARS_GROUPS = [
+    {"group": "Paciente", "vars": [
+        {"token": "PACIENTE_NOME", "token_en": "patient_name", "label": "Nome do paciente", "example": "Maria Silva"},
+        {"token": "PACIENTE_CPF", "token_en": "patient_cpf", "label": "CPF", "example": "000.000.000-00"},
+        {"token": "PACIENTE_RG", "token_en": "patient_rg", "label": "RG", "example": "MG-00.000.000"},
+        {"token": "PACIENTE_DATA_NASCIMENTO", "token_en": "patient_birthdate", "label": "Data de nascimento", "example": "01/01/1985"},
+        {"token": "PACIENTE_IDADE", "token_en": "patient_age", "label": "Idade", "example": "40"},
+        {"token": "PACIENTE_TELEFONE", "token_en": "patient_phone", "label": "Telefone", "example": "(31) 90000-0000"},
+        {"token": "PACIENTE_EMAIL", "token_en": "patient_email", "label": "E-mail", "example": "maria@email.com"},
+        {"token": "PACIENTE_ENDERECO", "token_en": "patient_address", "label": "Endereço", "example": "Rua X, 100"},
+    ]},
+    {"group": "Profissional", "vars": [
+        {"token": "PROFISSIONAL_NOME", "token_en": "professional_name", "label": "Nome do profissional", "example": "Dra. Ana"},
+        {"token": "PROFISSIONAL_CPF", "token_en": "professional_cpf", "label": "CPF do profissional", "example": "000.000.000-00"},
+        {"token": "PROFISSIONAL_CONSELHO", "token_en": "professional_council", "label": "Conselho", "example": "CRM"},
+        {"token": "PROFISSIONAL_REGISTRO", "token_en": "professional_registration", "label": "Registro", "example": "12345"},
+    ]},
+    {"group": "Atendimento", "vars": [
+        {"token": "SESSAO_NUMERO", "token_en": "session_number", "label": "Número da sessão", "example": "ATT-2026-000001"},
+        {"token": "ATENDIMENTO_DATA", "token_en": "appointment_date", "label": "Data do atendimento", "example": "18/08/2026"},
+        {"token": "PROCEDIMENTO_NOME", "token_en": "procedure_name", "label": "Procedimento", "example": "Botox"},
+        {"token": "VALOR_PROCEDIMENTO", "token_en": "procedure_value", "label": "Valor do procedimento", "example": "R$ 1.200,00"},
+    ]},
+    {"group": "Financeiro", "vars": [
+        {"token": "ORCAMENTO_TOTAL", "token_en": "budget_total", "label": "Total do orçamento", "example": "R$ 3.500,00"},
+        {"token": "PARCELAS", "token_en": "installments", "label": "Parcelas", "example": "3"},
+        {"token": "FORMA_PAGAMENTO", "token_en": "payment_method", "label": "Forma de pagamento", "example": "cartão"},
+    ]},
+    {"group": "Clínica", "vars": [
+        {"token": "CLINICA_NOME", "token_en": "clinic_name", "label": "Nome da clínica", "example": "Clínica Bella"},
+        {"token": "CLINICA_CNPJ", "token_en": "clinic_cnpj", "label": "CNPJ", "example": "00.000.000/0001-00"},
+        {"token": "CLINICA_ENDERECO", "token_en": "clinic_address", "label": "Endereço da clínica", "example": "Av. Central, 500"},
+        {"token": "CLINICA_TELEFONE", "token_en": "clinic_phone", "label": "Telefone da clínica", "example": "(31) 3000-0000"},
+        {"token": "CLINICA_EMAIL", "token_en": "clinic_email", "label": "E-mail da clínica", "example": "contato@clinica.com"},
+    ]},
+    {"group": "Sistema", "vars": [
+        {"token": "DATA_ATUAL", "token_en": "today", "label": "Data atual", "example": "18/08/2026"},
+        {"token": "DATA_HORA_ATUAL", "token_en": "current_datetime", "label": "Data e hora atual", "example": "18/08/2026 14:30"},
+        {"token": "NUMERO_DOCUMENTO", "token_en": "document_number", "label": "Número do documento", "example": "DOC-2026-000001"},
+    ]},
 ]
+
+# Mapa token PT -> token EN (para gerar os aliases no contexto).
+_VAR_ALIASES = {v["token"]: v["token_en"] for g in VARS_GROUPS for v in g["vars"]}
+
+# Lista plana (compatibilidade com a paleta atual do editor). Inclui "PROCEDIMENTO"
+# legado para não quebrar templates antigos que o utilizam.
+VARS_AVAILABLE = [v["token"] for g in VARS_GROUPS for v in g["vars"]] + ["PROCEDIMENTO"]
 
 
 def _doc_public_token(document_id: str, clinic_id: str, scope: str = "doc") -> str:
@@ -4909,11 +5021,12 @@ def _doc_public_token(document_id: str, clinic_id: str, scope: str = "doc") -> s
 
 
 def _render_template_vars(content_md: str, ctx: Dict[str, str]) -> str:
-    """Replace {{VAR}} occurrences (case-sensitive). Missing vars become empty string + flag."""
+    """Replace {{VAR}} occurrences. Aceita token UPPERCASE PT (legado) e lowercase EN
+    (novo). Variável sem valor vira string vazia — nunca gera erro."""
     def repl(m):
         key = m.group(1).strip()
         return str(ctx.get(key, ""))
-    return re.sub(r"\{\{\s*([A-Z_]+)\s*\}\}", repl, content_md or "")
+    return re.sub(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}", repl, content_md or "")
 
 
 def _money_br(v: Optional[float]) -> str:
@@ -4925,28 +5038,101 @@ def _money_br(v: Optional[float]) -> str:
         return ""
 
 
+def _fmt_date_br(iso: Optional[str]) -> str:
+    """ISO/qualquer data -> dd/mm/YYYY. Vazio em falha (nunca lança)."""
+    if not iso:
+        return ""
+    try:
+        s = str(iso).replace("Z", "+00:00")
+        return datetime.fromisoformat(s).strftime("%d/%m/%Y")
+    except Exception:
+        try:
+            return datetime.strptime(str(iso)[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+        except Exception:
+            return ""
+
+
+def _compute_age(birth: Optional[str]) -> str:
+    """Idade em anos a partir de birth_date (ISO ou dd/mm/YYYY). Vazio em falha."""
+    if not birth:
+        return ""
+    d = None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            d = datetime.strptime(str(birth)[:10], fmt)
+            break
+        except Exception:
+            continue
+    if not d:
+        try:
+            d = datetime.fromisoformat(str(birth).replace("Z", "+00:00"))
+        except Exception:
+            return ""
+    today = datetime.now(timezone.utc)
+    years = today.year - d.year - ((today.month, today.day) < (d.month, d.day))
+    return str(years) if years >= 0 else ""
+
+
 async def _build_doc_context(
     patient: Dict[str, Any], professional: Dict[str, Any],
     clinic: Dict[str, Any], procedure: Optional[str], value: Optional[float],
+    *, appointment: Optional[Dict[str, Any]] = None,
+    session: Optional[Dict[str, Any]] = None, budget: Optional[Dict[str, Any]] = None,
+    document_number: str = "",
 ) -> Dict[str, str]:
-    return {
+    now = datetime.now(timezone.utc).astimezone()
+    clinic = clinic or {}
+    appointment = appointment or {}
+    session = session or {}
+    budget = budget or {}
+    base = {
         "PACIENTE_NOME": patient.get("name", ""),
         "PACIENTE_CPF": patient.get("cpf", ""),
         "PACIENTE_RG": patient.get("rg", ""),
         "PACIENTE_ENDERECO": patient.get("address", ""),
         "PACIENTE_TELEFONE": patient.get("phone", ""),
         "PACIENTE_DATA_NASCIMENTO": patient.get("birth_date", ""),
+        "PACIENTE_EMAIL": patient.get("email", ""),
+        "PACIENTE_IDADE": _compute_age(patient.get("birth_date")),
         "PROFISSIONAL_NOME": professional.get("name", ""),
         "PROFISSIONAL_CPF": professional.get("cpf", ""),
         "PROFISSIONAL_CONSELHO": professional.get("conselho", professional.get("council", "")),
         "PROFISSIONAL_REGISTRO": professional.get("registro", professional.get("registration", "")),
-        "CLINICA_NOME": (clinic or {}).get("name", ""),
-        "CLINICA_CNPJ": (clinic or {}).get("cnpj", ""),
-        "CLINICA_ENDERECO": (clinic or {}).get("address", ""),
-        "DATA_ATUAL": datetime.now(timezone.utc).astimezone().strftime("%d/%m/%Y"),
+        "CLINICA_NOME": clinic.get("name", ""),
+        "CLINICA_CNPJ": clinic.get("cnpj", ""),
+        "CLINICA_ENDERECO": clinic.get("address", ""),
+        "CLINICA_TELEFONE": clinic.get("phone", ""),
+        "CLINICA_EMAIL": clinic.get("email", ""),
+        "DATA_ATUAL": now.strftime("%d/%m/%Y"),
+        "DATA_HORA_ATUAL": now.strftime("%d/%m/%Y %H:%M"),
         "PROCEDIMENTO": procedure or "",
+        "PROCEDIMENTO_NOME": procedure or "",
         "VALOR_PROCEDIMENTO": _money_br(value),
+        "SESSAO_NUMERO": session.get("session_number", "") or "",
+        "ATENDIMENTO_DATA": _fmt_date_br(appointment.get("start")),
+        "ORCAMENTO_TOTAL": _money_br(budget.get("total")) if budget.get("total") is not None else "",
+        "PARCELAS": str(budget.get("installments")) if budget.get("installments") else "",
+        "FORMA_PAGAMENTO": budget.get("payment_method", "") or "",
+        "NUMERO_DOCUMENTO": document_number or "",
     }
+    # Aliases lowercase EN apontando para o mesmo valor (compatibilidade dupla).
+    for pt, en in _VAR_ALIASES.items():
+        if pt in base:
+            base[en] = base[pt]
+    return base
+
+
+async def _next_document_number(clinic_id: str) -> str:
+    """DOC-YYYY-###### sequencial por clínica+ano (atômico e idempotente por chamada)."""
+    year = datetime.now(timezone.utc).year
+    res = await db.document_counters.find_one_and_update(
+        {"clinic_id": clinic_id, "year": year},
+        {"$inc": {"next_number": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    seq = int((res or {}).get("next_number", 1))
+    return f"DOC-{year}-{seq:06d}"
 
 
 async def _audit_log(action: str, *, user: Dict[str, Any], document_id: str,
@@ -4965,11 +5151,147 @@ async def _audit_log(action: str, *, user: Dict[str, Any], document_id: str,
     })
 
 
+# ============================================================
+# ⭐ Fase 1 — Documentos Inteligentes: Categorias (multitenant)
+# ============================================================
+class DocumentCategoryIn(BaseModel):
+    name: str = Field(..., min_length=1)
+    description: Optional[str] = None
+    color: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    order: int = 0
+    active: bool = True
+
+
+_DEFAULT_CATEGORIES = [
+    "Consentimentos", "Contratos", "Planos de Tratamento", "Anamneses",
+    "Uso de Imagem", "Jurídico", "Financeiro", "Pós-Procedimento",
+    "Receitas", "Prescrições", "Avaliações",
+]
+
+
+def _slugify(text: str) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode("ascii")
+    t = re.sub(r"[^a-zA-Z0-9]+", "-", t).strip("-").lower()
+    return t or "categoria"
+
+
+async def _ensure_default_categories(clinic_id: str):
+    """Seed idempotente das categorias padrão por clínica (só se não houver nenhuma)."""
+    existing = await db.document_categories.count_documents({"clinic_id": clinic_id})
+    if existing > 0:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    docs = []
+    for i, name in enumerate(_DEFAULT_CATEGORIES):
+        docs.append({
+            "category_id": f"cat_{uuid.uuid4().hex[:12]}",
+            "clinic_id": clinic_id,
+            "name": name,
+            "slug": _slugify(name),
+            "description": None,
+            "color": None,
+            "order": i,
+            "active": True,
+            "is_default": True,
+            "created_at": now,
+            "updated_at": now,
+        })
+    try:
+        await db.document_categories.insert_many(docs, ordered=False)
+    except Exception:
+        pass  # corrida entre requisições concorrentes: ignora duplicados
+
+
+@api_router.get("/document-categories")
+async def list_doc_categories(active_only: bool = False, user: dict = Depends(get_current_user)):
+    forbid_recepcao_clinical(user)
+    await _ensure_default_categories(user["clinic_id"])
+    q = {"clinic_id": user["clinic_id"]}
+    if active_only:
+        q["active"] = True
+    docs = await db.document_categories.find(q, {"_id": 0}).sort([("order", 1), ("name", 1)]).to_list(500)
+    return docs
+
+
+@api_router.post("/document-categories")
+async def create_doc_category(data: DocumentCategoryIn, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    slug = _slugify(data.name)
+    dup = await db.document_categories.find_one(
+        {"clinic_id": user["clinic_id"], "slug": slug}, {"_id": 0, "category_id": 1})
+    if dup:
+        raise HTTPException(status_code=409, detail="Já existe uma categoria com esse nome")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "category_id": f"cat_{uuid.uuid4().hex[:12]}",
+        "clinic_id": user["clinic_id"],
+        "name": data.name,
+        "slug": slug,
+        "description": data.description,
+        "color": data.color,
+        "order": data.order,
+        "active": data.active,
+        "is_default": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.document_categories.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/document-categories/{category_id}")
+async def update_doc_category(category_id: str, data: DocumentCategoryIn, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    slug = _slugify(data.name)
+    dup = await db.document_categories.find_one(
+        {"clinic_id": user["clinic_id"], "slug": slug, "category_id": {"$ne": category_id}},
+        {"_id": 0, "category_id": 1})
+    if dup:
+        raise HTTPException(status_code=409, detail="Já existe uma categoria com esse nome")
+    update = {
+        "name": data.name, "slug": slug, "description": data.description,
+        "color": data.color, "order": data.order, "active": data.active,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    res = await db.document_categories.update_one(
+        {"category_id": category_id, "clinic_id": user["clinic_id"]}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Categoria não encontrada")
+    doc = await db.document_categories.find_one(
+        {"category_id": category_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+    return doc
+
+
+@api_router.delete("/document-categories/{category_id}")
+async def delete_doc_category(category_id: str, user: dict = Depends(get_current_user)):
+    require_admin(user)
+    cat = await db.document_categories.find_one(
+        {"category_id": category_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+    if not cat:
+        raise HTTPException(status_code=404, detail="Categoria não encontrada")
+    # Exclusão protegida: bloqueia se houver templates OU documentos vinculados (por slug ou nome).
+    refs = [cat.get("slug"), cat.get("name")]
+    in_use_tpl = await db.document_templates.count_documents(
+        {"clinic_id": user["clinic_id"], "category": {"$in": refs}})
+    in_use_doc = await db.documents.count_documents(
+        {"clinic_id": user["clinic_id"], "category": {"$in": refs}})
+    if in_use_tpl + in_use_doc > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Categoria em uso ({in_use_tpl} modelo(s), {in_use_doc} documento(s)). Desative-a ou realoque antes de excluir.")
+    await db.document_categories.delete_one(
+        {"category_id": category_id, "clinic_id": user["clinic_id"]})
+    return {"ok": True}
+
+
+
 # ---------- Templates (admin write, all clinical roles read) ----------
 @api_router.get("/document-templates/variables")
 async def list_doc_variables(user: dict = Depends(get_current_user)):
     forbid_recepcao_clinical(user)
-    return {"variables": VARS_AVAILABLE}
+    return {"variables": VARS_AVAILABLE, "groups": VARS_GROUPS}
 
 
 @api_router.get("/document-templates")
@@ -5076,13 +5398,39 @@ async def create_document(data: SignedDocumentIn, request: Request, user: dict =
         raise HTTPException(status_code=404, detail="Paciente não encontrado")
     clinic = await db.clinics.find_one({"clinic_id": user["clinic_id"]}, {"_id": 0})
     professional = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0}) or user
-    ctx = await _build_doc_context(patient, professional, clinic, data.procedure, data.procedure_value)
+    # ⭐ Fase 1: enriquecimento best-effort p/ novas variáveis (ausência => vazio, sem erro)
+    appointment = None
+    session = None
+    budget = None
+    if data.appointment_id:
+        try:
+            appointment = await db.appointments.find_one(
+                {"appointment_id": data.appointment_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+            session = await db.medical_records.find_one(
+                {"appointment_id": data.appointment_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+            budget = await db.budgets.find_one(
+                {"appointment_id": data.appointment_id, "clinic_id": user["clinic_id"]}, {"_id": 0})
+        except Exception:
+            pass
+    if not budget:
+        try:
+            budget = await db.budgets.find_one(
+                {"patient_id": data.patient_id, "clinic_id": user["clinic_id"]},
+                {"_id": 0}, sort=[("created_at", -1)])
+        except Exception:
+            budget = None
+    document_number = await _next_document_number(user["clinic_id"])
+    ctx = await _build_doc_context(
+        patient, professional, clinic, data.procedure, data.procedure_value,
+        appointment=appointment, session=session, budget=budget, document_number=document_number,
+    )
     rendered_md = _render_template_vars(template["content_md"], ctx)
     content_html = md.markdown(rendered_md, extensions=["extra", "nl2br"])
     document_id = f"doc_{uuid.uuid4().hex[:12]}"
     doc = {
         "document_id": document_id,
         "clinic_id": user["clinic_id"],
+        "document_number": document_number,   # ⭐ Fase 1: DOC-YYYY-######
         "template_id": template["template_id"],
         "template_name": template["name"],
         "category": template.get("category", "outro"),
@@ -6413,6 +6761,10 @@ async def on_startup():
         await db.appointments.create_index([("clinic_id", 1), ("patient_id", 1)])
         await db.patients.create_index([("clinic_id", 1), ("created_at", 1)])
         await db.patients.create_index([("clinic_id", 1), ("birth_date", 1)])
+        # ⭐ Fase 1 — Documentos Inteligentes
+        await db.document_categories.create_index([("clinic_id", 1), ("slug", 1)], unique=True)
+        await db.document_categories.create_index([("clinic_id", 1), ("order", 1)])
+        await db.document_counters.create_index([("clinic_id", 1), ("year", 1)], unique=True)
     except Exception:
         pass
     # ensure trial for the demo clinic (idempotent)
