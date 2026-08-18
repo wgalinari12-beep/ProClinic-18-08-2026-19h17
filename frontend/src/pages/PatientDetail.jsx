@@ -161,7 +161,7 @@ export default function PatientDetail() {
         {/* Tabs */}
         <div className="lg:col-span-2 rounded-2xl border border-border bg-card p-6">
           <Tabs value={activeTab} onValueChange={setActiveTab} data-testid="patient-tabs">
-            <TabsList className="bg-muted/50 rounded-xl max-w-full overflow-x-auto justify-start">
+            <TabsList className="flex flex-wrap h-auto gap-1 bg-muted/50 rounded-xl justify-start">
               {!canClinical && (
                 <TabsTrigger value="timeline" data-testid="tab-timeline" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                   <CalendarDays className="h-4 w-4 mr-1.5" />Timeline

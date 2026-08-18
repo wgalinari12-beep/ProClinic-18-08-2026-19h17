@@ -674,7 +674,7 @@ export default function AttendanceDialog({ appointment, open, onOpenChange, onCo
               )}
               <fieldset disabled={locked} className={`min-w-0 border-0 p-0 m-0 ${locked ? "opacity-80" : ""}`}>
               <Tabs value={tab} onValueChange={setTab}>
-                <TabsList className="bg-muted/50 rounded-xl max-w-full overflow-x-auto justify-start">
+                <TabsList className="flex flex-wrap h-auto gap-1 bg-muted/50 rounded-xl justify-start">
                   <TabsTrigger value="ficha" data-testid="tab-ficha" className="rounded-lg data-[state=active]:bg-card data-[state=active]:text-primary">
                     <ClipboardList className="h-3.5 w-3.5 mr-1.5" />Ficha
                   </TabsTrigger>
