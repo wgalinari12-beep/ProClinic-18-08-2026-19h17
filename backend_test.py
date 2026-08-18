@@ -10,7 +10,7 @@ import sys
 from typing import Dict, Any, Optional
 
 # Backend URL from frontend/.env
-BASE_URL = "https://medical-hub-131.preview.emergentagent.com/api"
+BASE_URL = "https://proclinic-app.preview.emergentagent.com/api"
 
 # Test credentials from /app/memory/test_credentials.md
 ADMIN_EMAIL = "admin@proclinic.com"

@@ -404,7 +404,7 @@ agent_communication:
       
       NETWORK REQUEST DIAGNOSTICS:
       ✅ POST /api/auth/login WAS FIRED when clicking "Entrar"
-      ✅ Request URL: https://42d87ff7-67d9-43a8-8087-a3600d906d66.preview.emergentagent.com/api/auth/login
+      ✅ Request URL: https://proclinic-app.preview.emergentagent.com/api/auth/login
       ✅ Request method: POST
       ✅ Request payload: {"email":"admin@proclinic.com","cpf":null,"password":"admin123"}
       
@@ -436,7 +436,7 @@ agent_communication:
       ✅ NO 4xx/5xx errors (except expected 401 on /api/auth/me before login)
       
       NAVIGATION:
-      ✅ Final URL: https://42d87ff7-67d9-43a8-8087-a3600d906d66.preview.emergentagent.com/dashboard
+      ✅ Final URL: https://proclinic-app.preview.emergentagent.com/dashboard
       ✅ Successfully navigated from /login to /dashboard
       
       DASHBOARD UI:
