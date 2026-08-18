@@ -24,7 +24,7 @@ import pytest
 import requests
 from motor.motor_asyncio import AsyncIOMotorClient
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://proclinic-deploy-1.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://medical-hub-131.preview.emergentagent.com").rstrip("/")
 WEBHOOK_TOKEN = os.environ.get("ASAAS_WEBHOOK_TOKEN", "whsec_proclinic_a8f3d9e2c1b47506a92e3f81d5c6b0a4")
 API = f"{BASE_URL}/api"
 

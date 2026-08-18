@@ -376,3 +376,88 @@ agent_communication:
       
       The fix (lang="pt-BR" + translate="no") successfully prevents Chrome Translate
       from interfering with React's DOM reconciliation. Bug is resolved.
+    -agent: "user"
+    -message: |
+      User requested comprehensive LOGIN flow testing with EXACT diagnostics capture:
+      - Verify form rendering (heading, email input, password input, submit button)
+      - Confirm pre-filled credentials (admin@proclinic.com / admin123)
+      - Click "Entrar" and capture:
+        • Network request POST to /api/auth/login (status + response body)
+        • localStorage 'pc_token' value after clicking
+        • Browser console errors
+        • Failed/blocked network requests
+        • Final URL after login attempt
+        • Screenshot of final state
+    -agent: "testing"
+    -message: |
+      ✅ LOGIN FLOW COMPREHENSIVE TEST COMPLETED - ALL CHECKS PASSED
+      
+      FORM RENDERING (4/4 passed):
+      ✅ Heading "Bem-vindo(a) de volta" present
+      ✅ Email input [data-testid="login-email"] present
+      ✅ Password input [data-testid="login-password"] present
+      ✅ Submit button [data-testid="login-submit-btn"] with text "Entrar" present
+      
+      PRE-FILLED CREDENTIALS (2/2 passed):
+      ✅ Email field value: admin@proclinic.com (correct)
+      ✅ Password field value: admin123 (correct)
+      
+      NETWORK REQUEST DIAGNOSTICS:
+      ✅ POST /api/auth/login WAS FIRED when clicking "Entrar"
+      ✅ Request URL: https://42d87ff7-67d9-43a8-8087-a3600d906d66.preview.emergentagent.com/api/auth/login
+      ✅ Request method: POST
+      ✅ Request payload: {"email":"admin@proclinic.com","cpf":null,"password":"admin123"}
+      
+      API RESPONSE:
+      ✅ Status: 200 (success)
+      ✅ Response body contains:
+         - user_id: user_4f45a7801bfd
+         - email: admin@proclinic.com
+         - name: Administrador
+         - role: admin
+         - clinic_id: clinic_01071f7957a5
+         - token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzRmNDVhNzgwMWJmZCIsImVtYWlsIjoiYWRtaW5AcHJvY2xpbmljLmNvbSIsImV4cCI6MTc4NzEwNjg1OCwidHlwZSI6ImFjY2VzcyJ9...
+      
+      LOCALSTORAGE:
+      ✅ 'pc_token' is SET in localStorage after login
+      ✅ Token value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzRmNDVhNzgwMWJmZCIsImVtYWlsIjoiYWRtaW5AcHJvY2xpbmljLmNvbSIsImV4cCI6MTc4NzEwNjg1OCwidHlwZSI6ImFjY2VzcyJ9...
+      
+      CONSOLE ERRORS:
+      ⚠️ Minor (expected): Two 401 errors on /api/auth/me during initial page load
+         - These are EXPECTED behavior (AuthContext.checkAuth() runs on mount before user is authenticated)
+         - NOT a bug - normal flow
+      ✅ NO removeChild or NotFoundError detected
+      ✅ NO CORS errors detected
+      ✅ NO uncaught exceptions detected
+      
+      NETWORK ERRORS:
+      ✅ NO failed/blocked requests during login flow
+      ✅ NO CORS errors
+      ✅ NO 4xx/5xx errors (except expected 401 on /api/auth/me before login)
+      
+      NAVIGATION:
+      ✅ Final URL: https://42d87ff7-67d9-43a8-8087-a3600d906d66.preview.emergentagent.com/dashboard
+      ✅ Successfully navigated from /login to /dashboard
+      
+      DASHBOARD UI:
+      ✅ Dashboard loaded successfully with data:
+         - Sidebar navigation visible
+         - "Painel executivo" heading
+         - KPI cards (Faturamento R$ 7.200,00, Atendimentos hoje: 4, Pacientes ativos: 4, Ocupação agenda: 33%)
+         - Revenue chart "Fluxo: Últimos 6 meses" with data
+         - "Agenda do dia" section with appointments
+         - "Top procedimentos" section
+      ✅ Screenshot captured: login_final_state.png
+      
+      FINAL VERDICT:
+      ✅ LOGIN FLOW IS WORKING PERFECTLY
+      - Form submits correctly
+      - POST request fires successfully
+      - Backend returns 200 with valid token
+      - localStorage is set correctly
+      - User is redirected to /dashboard
+      - Dashboard loads with data
+      - NO critical errors detected
+      
+      The suspicion of "client-side issue where form submit may not be firing POST" is UNFOUNDED.
+      The login flow works correctly for real users. All diagnostics confirm successful operation.

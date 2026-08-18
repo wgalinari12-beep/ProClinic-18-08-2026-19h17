@@ -1,5 +1,15 @@
 # PRD — ProClinic (importado de GitHub)
 
+## Re-importação (18/08/2026)
+- Repo público reimportado/sincronizado: https://github.com/wgalinari15-boop/ProClinic-17-08-2026-22h51 (origin/main, up to date).
+- `.env` estavam ausentes (gitignore) — recriados:
+  - backend/.env: MONGO_URL, DB_NAME=proclinic_database, JWT_SECRET, EMERGENT_LLM_KEY (preenchida), FRONTEND_URL=preview, ADMIN_EMAIL/PASSWORD, ASAAS/RESEND vazias.
+  - frontend/.env: REACT_APP_BACKEND_URL=preview, WDS_SOCKET_PORT=443.
+- Fix de dependência: `svglib`→`rlpycairo`→`pycairo` exigia system deps. Instalado `pkg-config` + `libcairo2-dev` (registrado em .emergent/system_deps.txt).
+- Serviços rodando; seed cria admin@proclinic.com/admin123 e superadmin@proclinic.com/super123.
+- Validado E2E pelo testing agent: login → /dashboard OK, dashboard carrega dados reais, sem erros. Backend auth 200 (Bearer+Cookie), CORS preflight OK.
+
+
 ## Problema original
 Importar repositório https://github.com/ptfirmino01-max/PROCINIC-10-08-2020.git e executar alterações solicitadas pelo usuário (PT-BR).
 
