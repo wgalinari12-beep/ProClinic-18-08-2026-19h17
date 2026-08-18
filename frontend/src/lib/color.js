@@ -28,6 +28,13 @@ export function hexToRgb(hex) {
 
 // Retorna "H S% L%" (formato usado pelas CSS variables --primary etc.)
 export function hexToHslTriplet(hex) {
+  const o = hexToHsl(hex);
+  if (!o) return null;
+  return `${o.h} ${o.s}% ${o.l}%`;
+}
+
+// Conversão HEX -> HSL numérico ({ h: 0..360, s: 0..100, l: 0..100 }).
+export function hexToHsl(hex) {
   if (!isValidHex(normalizeHex(hex))) return null;
   const { r, g, b } = hexToRgb(hex);
   const rn = r / 255, gn = g / 255, bn = b / 255;
@@ -44,7 +51,26 @@ export function hexToHslTriplet(hex) {
     }
     h /= 6;
   }
-  return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
+  return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
+}
+
+// Conversão HSL numérico -> HEX.
+export function hslToHex(h, s, l) {
+  const sn = Math.min(100, Math.max(0, s)) / 100;
+  const ln = Math.min(100, Math.max(0, l)) / 100;
+  const c = (1 - Math.abs(2 * ln - 1)) * sn;
+  const hp = ((h % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  let r = 0, g = 0, b = 0;
+  if (hp >= 0 && hp < 1) { r = c; g = x; }
+  else if (hp < 2) { r = x; g = c; }
+  else if (hp < 3) { g = c; b = x; }
+  else if (hp < 4) { g = x; b = c; }
+  else if (hp < 5) { r = x; b = c; }
+  else { r = c; b = x; }
+  const m = ln - c / 2;
+  const to2 = (v) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${to2(r)}${to2(g)}${to2(b)}`;
 }
 
 // Luminância relativa (WCAG) para decidir texto claro/escuro sobre a cor.
@@ -67,4 +93,36 @@ export function getContrastForegroundTriplet(hex) {
 export function getContrastHex(hex) {
   if (!isValidHex(normalizeHex(hex))) return "#222222";
   return relativeLuminance(hex) > 0.45 ? "#222222" : "#ffffff";
+}
+
+// Razão de contraste WCAG entre duas cores HEX (>= 1). Ex.: 4.5, 3.0.
+export function contrastRatio(hexA, hexB) {
+  const la = relativeLuminance(hexA);
+  const lb = relativeLuminance(hexB);
+  const hi = Math.max(la, lb) + 0.05;
+  const lo = Math.min(la, lb) + 0.05;
+  return hi / lo;
+}
+
+// toLegibleHex — Ajusta a LUMINOSIDADE da cor da marca (preservando matiz e
+// saturação) para garantir legibilidade quando usada como TEXTO/ÍCONE sobre
+// fundo claro, sem torná-la escura demais para o tema escuro.
+//   - Mantém a cor dentro de uma faixa de luminosidade segura [minL, maxL];
+//   - Se o contraste (WCAG) contra o fundo de referência (branco) ficar abaixo
+//     de `target`, reduz a luminosidade em passos até atingir o alvo ou minL.
+// Cores já legíveis (incluindo os tons padrão do ProClinic) permanecem
+// praticamente inalteradas.
+export function toLegibleHex(hex, opts = {}) {
+  const { bg = "#ffffff", target = 3.0, minL = 30, maxL = 62 } = opts;
+  const hsl = hexToHsl(hex);
+  if (!hsl) return normalizeHex(hex);
+  let { h, s, l } = hsl;
+  l = Math.min(maxL, Math.max(minL, l));
+  let guard = 0;
+  while (guard++ < 80) {
+    const cand = hslToHex(h, s, l);
+    if (contrastRatio(cand, bg) >= target || l <= minL) return cand;
+    l -= 1;
+  }
+  return hslToHex(h, s, l);
 }

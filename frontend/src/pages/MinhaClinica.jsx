@@ -11,7 +11,7 @@ import {
 import { toast } from "sonner";
 import { formatApiErrorDetail } from "@/lib/api";
 import { useClinicBrand } from "@/contexts/ClinicBrandContext";
-import { isValidHex, normalizeHex, getContrastHex } from "@/lib/color";
+import { isValidHex, normalizeHex, getContrastHex, toLegibleHex } from "@/lib/color";
 
 const DEFAULTS = {
   primary_color: "#B76E79",
@@ -81,10 +81,12 @@ function ColorField({ label, hint, value, fallback, onChange, testid }) {
 }
 
 // Área de pré-visualização da identidade visual.
+// Usa toLegibleHex para exibir exatamente a cor que será aplicada ao tema
+// (o seletor continua mostrando a cor bruta escolhida pelo administrador).
 function BrandPreview({ primary, secondary, accent }) {
-  const p = isValidHex(normalizeHex(primary)) ? normalizeHex(primary) : DEFAULTS.primary_color;
-  const s = isValidHex(normalizeHex(secondary)) ? normalizeHex(secondary) : DEFAULTS.secondary_color;
-  const a = isValidHex(normalizeHex(accent)) ? normalizeHex(accent) : DEFAULTS.accent_color;
+  const p = toLegibleHex(isValidHex(normalizeHex(primary)) ? normalizeHex(primary) : DEFAULTS.primary_color);
+  const s = toLegibleHex(isValidHex(normalizeHex(secondary)) ? normalizeHex(secondary) : DEFAULTS.secondary_color);
+  const a = toLegibleHex(isValidHex(normalizeHex(accent)) ? normalizeHex(accent) : DEFAULTS.accent_color);
   return (
     <div className="rounded-xl border border-border overflow-hidden" data-testid="brand-preview">
       {/* Cabeçalho de exemplo */}
