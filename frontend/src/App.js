@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import "@/App.css";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ThemeProvider } from "@/contexts/ThemeContext";
+import { ClinicBrandProvider } from "@/contexts/ClinicBrandContext";
 import { Toaster } from "@/components/ui/sonner";
 
 import Layout from "@/components/Layout";
@@ -94,9 +95,11 @@ export default function App() {
     <ThemeProvider>
       <BrowserRouter>
         <AuthProvider>
-          <AppRouter />
-          <ChangePasswordModal />
-          <Toaster position="top-right" />
+          <ClinicBrandProvider>
+            <AppRouter />
+            <ChangePasswordModal />
+            <Toaster position="top-right" />
+          </ClinicBrandProvider>
         </AuthProvider>
       </BrowserRouter>
     </ThemeProvider>

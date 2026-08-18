@@ -1,5 +1,12 @@
 # PRD — ProClinic (importado de GitHub)
 
+## Feature: Identidade Visual por Clínica (18/08/2026) — implementado, SEM testes (a pedido)
+- Backend `server.py`: `ClinicSettingsIn` +`secondary_color`/`accent_color` (validação HEX). `PUT /clinic` agora exige `require_admin`. `GET /clinic` continua legível por todos da clínica. Reutiliza coleção `clinics` (por clinic_id) e `POST /uploads` (storage por clínica, URL assinada). Sem novos endpoints/estrutura de dados.
+- Frontend novos: `lib/color.js` (HEX↔HSL, validação, contraste WCAG), `contexts/ClinicBrandContext.jsx` (carrega GET /clinic no login e aplica CSS vars --primary/--secondary/--accent/--ring + foreground por contraste; cache em localStorage; reset no logout).
+- Frontend alterados: `lib/api.js` (`resolveFileUrl`), `App.js` (ClinicBrandProvider dentro do AuthProvider), `pages/MinhaClinica.jsx` (seção Identidade Visual: logo upload/preview/remover, 3 cores com picker+HEX+validação, pré-visualização, restaurar padrão), `components/Sidebar.jsx` e `components/Layout.jsx` (exibem logo da clínica).
+- Multi-tenant: tudo filtrado por user.clinic_id; sem personalização → tema padrão ProClinic. NENHUM teste executado.
+
+
 ## Re-importação (18/08/2026)
 - Repo público reimportado/sincronizado: https://github.com/wgalinari15-boop/ProClinic-17-08-2026-22h51 (origin/main, up to date).
 - `.env` estavam ausentes (gitignore) — recriados:

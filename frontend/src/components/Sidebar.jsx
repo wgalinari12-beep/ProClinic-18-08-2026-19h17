@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useTheme } from "@/contexts/ThemeContext";
+import { useClinicBrand } from "@/contexts/ClinicBrandContext";
+import { resolveFileUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -30,6 +32,7 @@ const NAV = [
 export default function Sidebar({ collapsed, onToggle }) {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { logoUrl } = useClinicBrand();
   const navigate = useNavigate();
 
   return (
@@ -42,8 +45,12 @@ export default function Sidebar({ collapsed, onToggle }) {
     >
       {/* Brand */}
       <div className="h-16 px-4 flex items-center gap-3 border-b border-border/70">
-        <div className="h-9 w-9 rounded-xl bg-primary/10 ring-1 ring-primary/30 flex items-center justify-center">
-          <Stethoscope className="h-4.5 w-4.5 text-primary" strokeWidth={1.5} />
+        <div className="h-9 w-9 rounded-xl bg-primary/10 ring-1 ring-primary/30 flex items-center justify-center overflow-hidden shrink-0">
+          {logoUrl ? (
+            <img src={resolveFileUrl(logoUrl)} alt="Logo" className="h-full w-full object-contain" data-testid="sidebar-clinic-logo" />
+          ) : (
+            <Stethoscope className="h-4.5 w-4.5 text-primary" strokeWidth={1.5} />
+          )}
         </div>
         {!collapsed && (
           <div className="flex flex-col leading-tight">

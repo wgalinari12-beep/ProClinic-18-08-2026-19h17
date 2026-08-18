@@ -3,8 +3,11 @@ import { Outlet } from "react-router-dom";
 import { Menu, Stethoscope } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import TrialBanner from "@/components/TrialBanner";
+import { useClinicBrand } from "@/contexts/ClinicBrandContext";
+import { resolveFileUrl } from "@/lib/api";
 
 export default function Layout() {
+  const { logoUrl } = useClinicBrand();
   const [collapsed, setCollapsed] = useState(
     () => typeof window !== "undefined" && window.innerWidth < 1280
   );
@@ -57,8 +60,12 @@ export default function Layout() {
             <Menu className="h-5 w-5" strokeWidth={1.5} />
           </button>
           <div className="flex items-center gap-2">
-            <div className="h-7 w-7 rounded-lg bg-primary/10 ring-1 ring-primary/30 flex items-center justify-center">
-              <Stethoscope className="h-4 w-4 text-primary" strokeWidth={1.5} />
+            <div className="h-7 w-7 rounded-lg bg-primary/10 ring-1 ring-primary/30 flex items-center justify-center overflow-hidden">
+              {logoUrl ? (
+                <img src={resolveFileUrl(logoUrl)} alt="Logo" className="h-full w-full object-contain" />
+              ) : (
+                <Stethoscope className="h-4 w-4 text-primary" strokeWidth={1.5} />
+              )}
             </div>
             <span className="font-display text-[15px] font-semibold tracking-tight">ProClinic</span>
           </div>

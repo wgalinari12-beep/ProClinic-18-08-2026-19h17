@@ -4440,6 +4440,8 @@ class ClinicSettingsIn(BaseModel):
     youtube: Optional[str] = None
     logo_url: Optional[str] = None
     primary_color: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    secondary_color: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    accent_color: Optional[str] = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
 
 
 @api_router.get("/clinic")
@@ -4452,6 +4454,8 @@ async def get_clinic(user: dict = Depends(get_current_user)):
 
 @api_router.put("/clinic")
 async def update_clinic(data: ClinicSettingsIn, user: dict = Depends(get_current_user)):
+    # Apenas administradores da clínica podem alterar dados/identidade visual.
+    require_admin(user)
     update = data.model_dump(exclude_none=False)
     update["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.clinics.update_one(

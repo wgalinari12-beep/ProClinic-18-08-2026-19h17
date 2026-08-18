@@ -17,6 +17,20 @@ api.interceptors.request.use((cfg) => {
 export default api;
 
 /**
+ * resolveFileUrl — Resolve a URL de um arquivo servido pelo backend.
+ * URLs assinadas (com ?sig=) funcionam sem auth; para as demais, anexa o token.
+ */
+export function resolveFileUrl(url) {
+  if (!url) return "";
+  if (url.startsWith("http")) return url;
+  const base = process.env.REACT_APP_BACKEND_URL || "";
+  if (url.includes("sig=")) return `${base}${url}`;
+  const t = localStorage.getItem("pc_token");
+  const sep = url.includes("?") ? "&" : "?";
+  return `${base}${url}${t ? `${sep}auth=${encodeURIComponent(t)}` : ""}`;
+}
+
+/**
  * downloadFile — Baixa um arquivo (ex.: CSV) autenticado via axios (blob)
  * e dispara o download no navegador, preservando o header Authorization.
  */
