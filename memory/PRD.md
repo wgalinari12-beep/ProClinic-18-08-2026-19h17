@@ -1,5 +1,11 @@
 # PRD — ProClinic (importado de GitHub)
 
+## Sessão atual (reimport ProClinic18-08-26) — 18/08/2026
+- Reimport/setup: .env recriados (backend DB_NAME=proclinic_database, JWT_SECRET, EMERGENT_LLM_KEY, FRONTEND_URL preview; frontend REACT_APP_BACKEND_URL preview). System deps pkg-config+libcairo2-dev. Seed admin@proclinic.com/admin123, superadmin/super123. test_credentials.md atualizado.
+- Redesign UX (SEM alterar backend/endpoints/QR/PDF/auditoria): página pública de assinatura `pages/DocumentoPublico.jsx` reescrita (cabeçalho premium, stepper, card identificação, leitura+expandir, área de assinatura premium, overlay processando, tela de sucesso com protocolo — SEM IP). Novo componente `components/SignaturePadPremium.jsx` (Limpar/Refazer/Confirmar, canvas >=240px, feedback em tempo real). SignaturePad interno intocado. Backup em /app/.backups/DocumentoPublico.jsx.bak.
+- BUGFIX LOGIN (CORS): `lib/api.js` withCredentials true->false. Ingress responde Access-Control-Allow-Origin:* + backend Allow-Credentials:true (combo inválido p/ requisições credenciadas => "Network Error"/"Não foi possível conectar ao servidor"). Auth é por Bearer token (pc_token localStorage), cookie é só fallback. VERIFICADO pelo testing agent E2E: login 200, dashboard carrega, sem erros CORS.
+
+
 ## Correções pós-auditoria Identidade Visual (18/08/2026) — SEM testes (a pedido)
 - Contraste (WCAG): `lib/color.js` ganhou `hexToHsl`, `hslToHex`, `contrastRatio`, `toLegibleHex` (clamp de luminosidade L∈[30,62] + alvo 3:1 vs branco, preservando matiz/saturação). `applyBrandVars` agora aplica a cor AJUSTADA em --primary/--secondary/--accent/--ring e deriva o -foreground da mesma cor → `text-primary/secondary/accent` legíveis sem tocar em 41 arquivos. Defaults do tema intactos (só cores da clínica são ajustadas). `BrandPreview` reflete a cor ajustada.
 - Cache por clínica: `ClinicBrandContext` passou de chave global `pc_brand` para `pc_brand_<clinic_id>`; aplica cache só da clínica logada; guarda `activeClinicRef` contra race na troca de conta; logout limpa vars aplicadas (mantém caches individuais). Backend inalterado, sem mudança de DB.

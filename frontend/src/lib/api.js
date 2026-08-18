@@ -5,7 +5,12 @@ export const API = `${BACKEND_URL}/api`;
 
 const api = axios.create({
   baseURL: API,
-  withCredentials: true,
+  // Auth é feita via Bearer token (localStorage + interceptor abaixo). O cookie
+  // é apenas um fallback do backend. Mantemos withCredentials=false porque o
+  // ingress da plataforma responde com Access-Control-Allow-Origin: "*", que é
+  // incompatível com requisições credenciadas (o navegador bloqueia "*" +
+  // Allow-Credentials:true, gerando "Network Error" no login).
+  withCredentials: false,
 });
 
 api.interceptors.request.use((cfg) => {

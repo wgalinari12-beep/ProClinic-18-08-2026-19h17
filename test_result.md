@@ -227,6 +227,62 @@ frontend:
           CRITICAL CONFIRMATION: The fix (lang="pt-BR" + translate="no") successfully prevents
           Chrome Translate from interfering with React's DOM reconciliation. The bug is resolved.
 
+  - task: "withCredentials CORS fix — login 'Network Error' (Não foi possível conectar ao servidor)"
+    implemented: true
+    working: true
+    file: "frontend/src/lib/api.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        -working: "NA"
+        -agent: "main"
+        -comment: |
+          User reportou erro "Não foi possível conectar ao servidor" no login (frontend "Network Error").
+          Causa raiz: frontend axios client usava withCredentials: true, mas o ingress da plataforma
+          retorna Access-Control-Allow-Origin: * junto com Access-Control-Allow-Credentials: true,
+          uma combinação inválida que navegadores bloqueiam para requisições credenciadas.
+          Fix: definir withCredentials: false em /app/frontend/src/lib/api.js
+          (auth usa Bearer token armazenado em localStorage como 'pc_token').
+        -working: true
+        -agent: "testing"
+        -comment: |
+          ✅ TESTED & WORKING - withCredentials CORS fix COMPLETELY VERIFIED.
+          
+          Comprehensive end-to-end testing completed (10/10 checks passed):
+          
+          LOGIN FLOW VERIFICATION:
+          ✅ Login page loaded: "Bem-vindo(a) de volta" heading present
+          ✅ Credentials pre-filled: admin@proclinic.com / admin123
+          ✅ Form submission successful (clicked "Entrar")
+          ✅ POST /api/auth/login returned HTTP 200
+          ✅ Response body contains valid token and user data (email, role: admin)
+          ✅ Token stored in localStorage as 'pc_token'
+          ✅ Successfully navigated to /dashboard
+          ✅ Dashboard content loaded ("Painel executivo" heading visible)
+          
+          CORS & NETWORK ERROR VERIFICATION:
+          ✅ NO CORS errors detected in browser console
+          ✅ NO "Network Error" message displayed
+          ✅ NO "Não foi possível conectar ao servidor" error
+          
+          AUTHENTICATED API CALL VERIFICATION:
+          ✅ GET /api/dashboard/stats returned HTTP 200 (Bearer token working correctly)
+          
+          CORS HEADERS ANALYSIS:
+          Response headers from /api/auth/login:
+          - access-control-allow-origin: *
+          - access-control-allow-credentials: true
+          - access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH
+          
+          KEY FINDING: The combination of "allow-origin: *" + "allow-credentials: true" would
+          normally cause a CORS error with withCredentials: true, but the fix (withCredentials: false)
+          allows the request to succeed. Auth works via Bearer token in localStorage, so credentials
+          are not needed in the request.
+          
+          FINAL VERDICT: The withCredentials: false fix successfully resolved the CORS issue.
+          Login flow works perfectly end-to-end. Bug is FIXED.
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
@@ -461,3 +517,59 @@ agent_communication:
       
       The suspicion of "client-side issue where form submit may not be firing POST" is UNFOUNDED.
       The login flow works correctly for real users. All diagnostics confirm successful operation.
+    -agent: "user"
+    -message: |
+      NEW BUG FIX VERIFICATION REQUESTED: withCredentials CORS fix
+      Context: Users could not log in. UI showed "Não foi possível conectar ao servidor" (Network Error).
+      Root cause: frontend axios client used withCredentials: true, but platform ingress returns
+      Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true, an invalid
+      combination that browsers block for credentialed requests.
+      Fix applied: set withCredentials: false in /app/frontend/src/lib/api.js
+      (auth uses Bearer token stored in localStorage as 'pc_token').
+      
+      TEST REQUIREMENTS:
+      1. Verify login page loads (title "Bem-vindo(a) de volta")
+      2. Credentials pre-filled: admin@proclinic.com / admin123
+      3. Click "Entrar" button
+      4. EXPECTED: login succeeds, NO "Não foi possível conectar ao servidor" error
+      5. App navigates to /dashboard (dashboard content loads)
+      6. Capture console/network logs - confirm NO CORS error, NO "Network Error"
+      7. Confirm POST /api/auth/login returns HTTP 200
+      8. Confirm authenticated request (GET /api/auth/me or dashboard data) succeeds with Bearer token
+    -agent: "testing"
+    -message: |
+      ✅ withCredentials CORS FIX VERIFIED - BUG COMPLETELY FIXED
+      
+      Comprehensive end-to-end testing completed (10/10 checks passed):
+      
+      LOGIN FLOW VERIFICATION:
+      ✅ Login page loaded: "Bem-vindo(a) de volta" heading present
+      ✅ Credentials pre-filled: admin@proclinic.com / admin123
+      ✅ Form submission successful (clicked "Entrar")
+      ✅ POST /api/auth/login returned HTTP 200
+      ✅ Response body contains valid token and user data (email, role: admin)
+      ✅ Token stored in localStorage as 'pc_token'
+      ✅ Successfully navigated to /dashboard
+      ✅ Dashboard content loaded ("Painel executivo" heading visible)
+      
+      CORS & NETWORK ERROR VERIFICATION:
+      ✅ NO CORS errors detected in browser console
+      ✅ NO "Network Error" message displayed
+      ✅ NO "Não foi possível conectar ao servidor" error
+      
+      AUTHENTICATED API CALL VERIFICATION:
+      ✅ GET /api/dashboard/stats returned HTTP 200 (Bearer token working correctly)
+      
+      CORS HEADERS ANALYSIS:
+      Response headers from /api/auth/login:
+      - access-control-allow-origin: *
+      - access-control-allow-credentials: true
+      - access-control-allow-methods: GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH
+      
+      KEY FINDING: The combination of "allow-origin: *" + "allow-credentials: true" would
+      normally cause a CORS error with withCredentials: true, but the fix (withCredentials: false)
+      allows the request to succeed. Auth works via Bearer token in localStorage, so credentials
+      are not needed in the request.
+      
+      FINAL VERDICT: The withCredentials: false fix successfully resolved the CORS issue.
+      Login flow works perfectly end-to-end. Bug is FIXED.
